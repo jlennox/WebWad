@@ -409,60 +409,96 @@ class MapView {
     private scale = 1;
     private baseX: number;
     private baseY: number;
+    private currentMap: MapEntry | undefined;
+    private readonly canvasWidth: number;
+    private readonly canvasHeight: number;
 
-    constructor(element: HTMLCanvasElement) {
-        this.baseX = element.width / 2;
-        this.baseY = element.height / 2;
+    constructor(private readonly canvas: HTMLCanvasElement) {
+        canvas.style.position = "fixed";
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+        this.canvasWidth = canvas.width;
+        this.canvasHeight = canvas.height;
+
+        this.baseX = canvas.width / 2;
+        this.baseY = canvas.height / 2;
 
         this.wad = new Promise<WadFile>((resolve, _reject) => {
-            new UserFileReader(element, (file) => {
+            new UserFileReader(canvas, (file) => {
                 const wad = new WadFile(file);
                 console.log("wad", wad);
                 resolve(wad);
             });
         });
+
+        document.addEventListener("wheel", (event) => {
+            const step = event.shiftKey ? .1 : .025;
+            this.scale += (event.deltaY < 0 ? 1 : -1) * step;
+            if (this.scale < .025) this.scale = .025;
+            // this.baseX += (event.offsetX - this.baseX) * .1;
+            // this.baseY += (event.offsetY - this.baseY) * .1;
+            this.redraw();
+        });
+
+        let isMouseDown = false;
+        let lastMouseEvent: MouseEvent | null = null;
+
+        canvas.addEventListener("mousedown", (event) => {
+            isMouseDown = true;
+            lastMouseEvent = event;
+        });
+
+        canvas.addEventListener("mouseup", (_event) => {
+            isMouseDown = false;
+            lastMouseEvent = null;
+        });
+
+        canvas.addEventListener("mousemove", (event) => {
+            if (isMouseDown == false) return;
+
+            if (lastMouseEvent != null) {
+                const deltaX = lastMouseEvent.x - event.x;
+                const deltaY = lastMouseEvent.y - event.y;
+
+                this.baseX -= deltaX;
+                this.baseY -= deltaY;
+
+                this.redraw();
+            }
+
+            lastMouseEvent = event;
+        });
+    }
+
+    private redraw(): void {
+        this.redraw2d();
+    }
+
+    private redraw3d(): void {
+        const gl = this.canvas.getContext("webgl");
+    }
+
+    private redraw2d(): void {
+        const linedefs = this.currentMap!.linedefs;
+        const context = this.canvas.getContext("2d")!;
+        context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+        context.lineWidth = 1;
+        for (const def of linedefs) {
+            context.beginPath();
+            context.strokeStyle = def.hasFlag(LinedefFlags.SECRET) ? "red" : "black";
+            context.moveTo(def.vertexA.x * this.scale + this.baseX, def.vertexA.y * this.scale + this.baseY);
+            context.lineTo(def.vertexB.x * this.scale + this.baseX, def.vertexB.y * this.scale + this.baseY);
+            context.stroke();
+        }
     }
 
     public async displayLevel(name: string): Promise<void> {
         const wad = await this.wad;
-        const nodes = wad.maps[0].linedefs;
-        const context = el.getContext("2d")!;
-        context.lineWidth = 1;
-        context.beginPath();
-        context.strokeStyle = "green";
-        for (const node of nodes) {
-            context.moveTo(node.vertexA.x + this.baseX, node.vertexA.y + this.baseY);
-            context.lineTo(node.vertexB.x + this.baseX, node.vertexB.y + this.baseY);
-        }
-        context.stroke();
+        this.currentMap = wad.maps[0];
+        this.redraw();
     }
 }
 
 const el = document.querySelector<HTMLCanvasElement>(".loadingzone")!;
-new UserFileReader(el, (file) => {
-    const wad = new WadFile(file);
-    console.log("wad", wad);
-    const nodes = wad.maps[0].linedefs;
-    console.log("nodes", nodes);
-    const context = el.getContext("2d")!;
-    const baseX = 200, baseY = 200;
-    context.lineWidth = 1;
-    context.beginPath();
-    context.strokeStyle = "green";
-    for (const node of nodes) {
-        context.moveTo(node.vertexA.x + baseX, node.vertexA.y + baseY);
-        context.lineTo(node.vertexB.x + baseX, node.vertexB.y + baseY);
-        // context.strokeRect(
-        //     baseX + node.boundingBoxLeft.left,
-        //     baseY + node.boundingBoxLeft.bottom,
-        //     baseX + node.boundingBoxLeft.right,
-        //     baseY + node.boundingBoxLeft.top);
-        // context.strokeStyle = "blue";
-        // context.strokeRect(
-        //     baseX + node.boundingBoxRight.left,
-        //     baseY + node.boundingBoxRight.bottom,
-        //     baseX + node.boundingBoxRight.right,
-        //     baseY + node.boundingBoxRight.top);
-    }
-    context.stroke();
-});
+const mapView = new MapView(el);
+mapView.displayLevel("MAP01");
