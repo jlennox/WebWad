@@ -4,6 +4,116 @@ type u32 = number;
 type i16 = number;
 
 type number_t = u8 | u16 | u32 | i16;
+type matrix = Float32Array;
+type vec3 = Float32Array;
+
+class mat4 {
+    public static create(): matrix {
+        const out = new Float32Array(16);
+        out[0] = 1;
+        out[5] = 1;
+        out[10] = 1;
+        out[15] = 1;
+        return out;
+    }
+
+    /**
+     * Generates a perspective projection matrix with the given bounds.
+     * The near/far clip planes correspond to a normalized device coordinate Z range of [-1, 1],
+     * which matches WebGL/OpenGL's clip volume.
+     * Passing null/undefined/no value for far will generate infinite projection matrix.
+     *
+     * @param {mat4} out mat4 frustum matrix will be written into
+     * @param {number} fovy Vertical field of view in radians
+     * @param {number} aspect Aspect ratio. typically viewport width/height
+     * @param {number} near Near bound of the frustum
+     * @param {number} far Far bound of the frustum, can be null or Infinity
+     * @returns {mat4} out
+     */
+    public static perspective(out: matrix, fovy: number, aspect: number, near: number, far: number): matrix {
+        const f = 1.0 / Math.tan(fovy / 2);
+        out[0] = f / aspect;
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
+        out[4] = 0;
+        out[5] = f;
+        out[6] = 0;
+        out[7] = 0;
+        out[8] = 0;
+        out[9] = 0;
+        out[11] = -1;
+        out[12] = 0;
+        out[13] = 0;
+        out[15] = 0;
+        if (far != null && far !== Infinity) {
+            const nf = 1 / (near - far);
+            out[10] = (far + near) * nf;
+            out[14] = 2 * far * near * nf;
+        } else {
+            out[10] = -1;
+            out[14] = -2 * near;
+        }
+        return out;
+    }
+
+    /**
+     * Translate a mat4 by the given vector
+     *
+     * @param {mat4} out the receiving matrix
+     * @param {ReadonlyMat4} a the matrix to translate
+     * @param {ReadonlyVec3} v vector to translate by
+     * @returns {mat4} out
+     */
+    public static translate(out: matrix, a: matrix, v: number[]): matrix {
+        let x = v[0],
+        y = v[1],
+        z = v[2];
+        let a00, a01, a02, a03;
+        let a10, a11, a12, a13;
+        let a20, a21, a22, a23;
+
+        if (a === out) {
+            out[12] = a[0] * x + a[4] * y + a[8] * z + a[12];
+            out[13] = a[1] * x + a[5] * y + a[9] * z + a[13];
+            out[14] = a[2] * x + a[6] * y + a[10] * z + a[14];
+            out[15] = a[3] * x + a[7] * y + a[11] * z + a[15];
+        } else {
+            a00 = a[0];
+            a01 = a[1];
+            a02 = a[2];
+            a03 = a[3];
+            a10 = a[4];
+            a11 = a[5];
+            a12 = a[6];
+            a13 = a[7];
+            a20 = a[8];
+            a21 = a[9];
+            a22 = a[10];
+            a23 = a[11];
+
+            out[0] = a00;
+            out[1] = a01;
+            out[2] = a02;
+            out[3] = a03;
+            out[4] = a10;
+            out[5] = a11;
+            out[6] = a12;
+            out[7] = a13;
+            out[8] = a20;
+            out[9] = a21;
+            out[10] = a22;
+            out[11] = a23;
+
+            out[12] = a00 * x + a10 * y + a20 * z + a[12];
+            out[13] = a01 * x + a11 * y + a21 * z + a[13];
+            out[14] = a02 * x + a12 * y + a22 * z + a[14];
+            out[15] = a03 * x + a13 * y + a23 * z + a[15];
+        }
+
+        return out;
+    }
+}
 
 class UserFileReader {
     constructor(target: HTMLElement, loaded: (result: ArrayBuffer) => void) {
@@ -34,19 +144,28 @@ class BinaryFileReader {
     public position: number = 0;
 
     private readonly u8: Uint8Array;
-    private readonly u16: Uint16Array;
-    private readonly u32: Uint32Array;
-    private readonly i16: Int16Array;
+    private readonly u16: readonly Uint16Array[];
+    private readonly u32: readonly Uint32Array[];
+    private readonly i16: readonly Int16Array[];
 
     private readonly storedPositions: number[] = [];
 
     private static readonly textDecoder = new TextDecoder("us-ascii"); // Correct encoding?
 
     constructor(file: ArrayBuffer) {
+        function createOffsetArrays<T>(count: number, ctor: (buff: ArrayBuffer) => T): readonly T[] {
+            const arrays: T[] = [];
+            const roundedFile = file.slice(0, file.byteLength - count - file.byteLength % count);
+            for (let i = 0; i < count; ++i) {
+                arrays.push(ctor(roundedFile.slice(i, roundedFile.byteLength - (count - i % count))));
+            }
+            return arrays;
+        }
+
         this.u8 = new Uint8Array(file);
-        this.u16 = new Uint16Array(file);
-        this.u32 = new Uint32Array(file);
-        this.i16 = new Int16Array(file);
+        this.u16 = createOffsetArrays(2, (buff) => new Uint16Array(buff));
+        this.u32 = createOffsetArrays(4, (buff) => new Uint32Array(buff));
+        this.i16 = createOffsetArrays(2, (buff) => new Int16Array(buff));
     }
 
     public seek(position: number): BinaryFileReader {
@@ -72,31 +191,22 @@ class BinaryFileReader {
     }
 
     public readU16(): u16 {
-        if (this.position % 2 != 0) {
-            throw new Error(`Unalign i32 read attempt: ${this.position}`);
-        }
-
-        const result = this.u16[this.position / 2];
+        const offset = this.position % 2;
+        const result = this.u16[offset][(this.position - offset) / 2];
         this.position += 2;
         return result;
     }
 
     public readU32(): u32 {
-        if (this.position % 4 != 0) {
-            throw new Error(`Unalign u32 read attempt: ${this.position}`);
-        }
-
-        const result = this.u32[this.position / 4];
+        const offset = this.position % 4;
+        const result = this.u32[offset][(this.position - offset) / 4];
         this.position += 4;
         return result;
     }
 
     public readI16(): i16 {
-        if (this.position % 2 != 0) {
-            throw new Error(`Unalign i32 read attempt: ${this.position}`);
-        }
-
-        const result = this.i16[this.position / 2];
+        const offset = this.position % 2;
+        const result = this.i16[offset][(this.position - offset) / 2];
         this.position += 2;
         return result;
     }
@@ -257,13 +367,6 @@ enum LinedefFlags {
     MONSTERSCANACTIVATE = 0x2000, // line can be activated by players and monsters 	ZDoom 	monsteractivate
     BLOCK_PLAYERS = 0x4000, // blocks players 	ZDoom 	blockplayers 	BLOCKF_PLAYERS
     BLOCKEVERYTHING = 0x8000, // blocks everything (includes gunshots & missiles) 	ZDoom 	blockeverything 	BLOCKF_EVERYTHING
-}
-
-const somePromise = Promise.resolve("hello world");
-async function foobar() {
-    console.log("entrance");
-    console.log(await somePromise);
-    console.log("exit");
 }
 
 class LiknedefEntry {
@@ -470,12 +573,68 @@ class MapView {
         });
     }
 
+    private awaitingRender = false;
+
     private redraw(): void {
-        this.redraw2d();
+        if (this.awaitingRender) return;
+        this.awaitingRender = true;
+
+        requestAnimationFrame(() => {
+            this.redraw2d();
+            this.awaitingRender = false;
+        });
     }
 
     private redraw3d(): void {
-        const gl = this.canvas.getContext("webgl");
+        const gl = this.canvas.getContext("webgl")!;
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        const positions = [
+            1.0,  1.0,
+           -1.0,  1.0,
+            1.0, -1.0,
+           -1.0, -1.0,
+         ];
+         gl.bufferData(gl.ARRAY_BUFFER,
+            new Float32Array(positions),
+            gl.STATIC_DRAW);
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);  // Clear to black, fully opaque
+        gl.clearDepth(1.0);                 // Clear everything
+        gl.enable(gl.DEPTH_TEST);           // Enable depth testing
+        gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const fieldOfView = 45 * Math.PI / 180;   // in radians
+        const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+        const zNear = 0.1;
+        const zFar = 100.0;
+        const projectionMatrix = mat4.create();
+        const modelViewMatrix = mat4.create();
+        mat4.translate(modelViewMatrix,     // destination matrix
+            modelViewMatrix,     // matrix to translate
+            [-0.0, 0.0, -6.0]);  // amount to translate
+
+        {
+            const numComponents = 2;  // pull out 2 values per iteration
+            const type = gl.FLOAT;    // the data in the buffer is 32bit floats
+            const normalize = false;  // don't normalize
+            const stride = 0;         // how many bytes to get from one set of values to the next
+                                        // 0 = use type and numComponents above
+            const offset = 0;         // how many bytes inside the buffer to start from
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            // gl.vertexAttribPointer(
+            //     programInfo.attribLocations.vertexPosition,
+            //     numComponents,
+            //     type,
+            //     normalize,
+            //     stride,
+            //     offset);
+            // gl.enableVertexAttribArray(
+            //     programInfo.attribLocations.vertexPosition);
+        }
     }
 
     private redraw2d(): void {
@@ -494,7 +653,7 @@ class MapView {
 
     public async displayLevel(name: string): Promise<void> {
         const wad = await this.wad;
-        this.currentMap = wad.maps[0];
+        this.currentMap = wad.maps.find((map) => map.name == name) ?? wad.maps[0];
         this.redraw();
     }
 }
