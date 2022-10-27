@@ -1659,13 +1659,11 @@ class MapEntry {
     }
 }
 class WadFile {
-    file;
-    reader;
     wadInfo;
     directory;
     maps;
+    reader;
     constructor(file) {
-        this.file = file;
         this.reader = new BinaryFileReader(file);
         this.wadInfo = new WadInfo(this.reader);
         this.reader.seek(this.wadInfo.infotableofs);
@@ -1721,10 +1719,8 @@ class MapView {
             if (isMouseDown == false)
                 return;
             if (lastMouseEvent != null) {
-                const deltaX = lastMouseEvent.x - event.x;
-                const deltaY = lastMouseEvent.y - event.y;
-                this.baseX -= deltaX;
-                this.baseY -= deltaY;
+                this.baseX -= lastMouseEvent.x - event.x;
+                this.baseY -= lastMouseEvent.y - event.y;
                 this.redraw();
             }
             lastMouseEvent = event;
