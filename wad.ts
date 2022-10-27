@@ -278,15 +278,7 @@ class NodeEntry {
     }
 
     public static loadAll(reader: BinaryFileReader, nodeEntry: DirectoryEntry): readonly NodeEntry[] {
-        reader.pushPosition(nodeEntry.filepos);
-        const nodes: NodeEntry[] = [];
-        const end = reader.position + nodeEntry.size;
-        while (reader.position <= end) {
-            const node = new NodeEntry(reader);
-            nodes.push(node);
-        }
-        reader.popPosition();
-        return nodes;
+        return nodeEntry.readAll(reader, (reader) => new NodeEntry(reader));
     }
 }
 
@@ -343,6 +335,28 @@ class Vertex {
 
     public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly Vertex[] {
         return entry.readAll(reader, (reader) => new Vertex(reader));
+    }
+}
+
+class ThingEntry {
+    public readonly x: i16;
+    public readonly y: i16;
+    public readonly angle: u16;
+    public readonly type: u16;
+    public readonly spawnFlags: u16;
+    public readonly description?: ThingDescription;
+
+    constructor(reader: BinaryFileReader) {
+        this.x = reader.readI16();
+        this.y = reader.readI16();
+        this.angle = reader.readU16();
+        this.type = reader.readU16();
+        this.spawnFlags = reader.readU16();
+        this.description = thingDescriptions[this.type];
+    }
+
+    public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly ThingEntry[] {
+        return entry.readAll(reader, (reader) => new ThingEntry(reader));
     }
 }
 
@@ -435,6 +449,7 @@ class MapEntry {
     public readonly entries: IMapDirectoryEntry;
     public readonly vertexes: readonly Vertex[];
     public readonly linedefs: readonly LiknedefEntry[];
+    public readonly things: readonly ThingEntry[];
 
     private readonly reader: BinaryFileReader
 
@@ -444,6 +459,7 @@ class MapEntry {
         this.entries = entries;
         this.vertexes = Vertex.readAll(entries.vertexes, reader);
         this.linedefs = LiknedefEntry.readAll(entries.linedefs, reader, this.vertexes);
+        this.things = ThingEntry.readAll(entries.things, reader);
     }
 
     public getNodes(): readonly NodeEntry[] {
@@ -638,16 +654,47 @@ class MapView {
     }
 
     private redraw2d(): void {
-        const linedefs = this.currentMap!.linedefs;
+        const map = this.currentMap;
+        if (map == null) return;
+
         const context = this.canvas.getContext("2d")!;
         context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
         context.lineWidth = 1;
-        for (const def of linedefs) {
+        for (const def of map.linedefs) {
             context.beginPath();
             context.strokeStyle = def.hasFlag(LinedefFlags.SECRET) ? "red" : "black";
             context.moveTo(def.vertexA.x * this.scale + this.baseX, def.vertexA.y * this.scale + this.baseY);
             context.lineTo(def.vertexB.x * this.scale + this.baseX, def.vertexB.y * this.scale + this.baseY);
             context.stroke();
+        }
+
+        for (const thing of map.things) {
+            if (thing.description == null) continue;
+
+            if (thing.description.sprite == ThingSprite.BON1) {
+                context.beginPath();
+                context.fillStyle = "blue";
+                context.arc(
+                    thing.x * this.scale + this.baseX,
+                    thing.y * this.scale + this.baseY,
+                    thing.description.radius * this.scale,
+                    0, Math.PI * 2);
+                context.fill();
+            } else {
+                context.beginPath();
+                context.strokeStyle = "green";
+                const centerX = thing.x * this.scale + this.baseX;
+                const centerY = thing.y * this.scale + this.baseY;
+                context.arc(
+                    centerX,
+                    centerY,
+                    thing.description.radius * this.scale,
+                    0, Math.PI * 2);
+                context.moveTo(centerX, centerY);
+                const lineLength = thing.description.radius * this.scale * 2;
+                // context.lineTo(
+                context.stroke();
+            }
         }
     }
 
