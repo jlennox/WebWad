@@ -5,8 +5,8 @@ type i16 = number;
 
 type number_t = u8 | u16 | u32 | i16;
 
-class UserFileReader {
-    constructor(target: HTMLElement, loaded: (result: ArrayBuffer) => void) {
+class UserFileInput {
+    constructor(target: HTMLElement, loaded: (userFile: ArrayBuffer) => void) {
         target.addEventListener("dragover", (event) => {
             event.stopPropagation();
             event.preventDefault();
@@ -43,6 +43,7 @@ class BinaryFileReader {
     private static readonly textDecoder = new TextDecoder("us-ascii"); // Correct encoding?
 
     constructor(file: ArrayBuffer) {
+        // Doing this is pretty silly... verify there's even unaligned values.
         function createOffsetArrays<T>(count: number, ctor: (buff: ArrayBuffer) => T): readonly T[] {
             const arrays: T[] = [];
             const roundedFile = file.slice(0, file.byteLength - count - file.byteLength % count);
@@ -58,20 +59,17 @@ class BinaryFileReader {
         this.i16 = createOffsetArrays(2, (buff) => new Int16Array(buff));
     }
 
-    public seek(position: number): BinaryFileReader {
+    public seek(position: number): void {
         this.position = position;
-        return this;
     }
 
-    public pushPosition(newPosition: number): BinaryFileReader {
+    public pushPosition(newPosition: number): void {
         this.storedPositions.push(this.position);
         this.position = newPosition;
-        return this;
     }
 
-    public popPosition(): BinaryFileReader {
+    public popPosition(): void {
         this.position = this.storedPositions.pop()!;
-        return this;
     }
 
     public readU8(): u8 {
@@ -101,7 +99,7 @@ class BinaryFileReader {
         return result;
     }
 
-    public readFixLengthString(length: number): string {
+    public readFixedLengthString(length: number): string {
         const start = this.position;
         let sub = 0;
         for (let i = 0; i < length; ++i) {
@@ -178,12 +176,12 @@ class DirectoryEntry {
     public readonly size: u32;
     public readonly name: string;
 
-    private static readonly mapNameExpression = /^MAP\d\d$|^E\dM\d$/;
+    private static readonly mapNameExpression = /^MAP\d+$|^E\d+M\d+$/;
 
     constructor(reader: BinaryFileReader) {
         this.filepos = reader.readU32();
         this.size = reader.readU32();
-        this.name = reader.readFixLengthString(8);
+        this.name = reader.readFixedLengthString(8);
     }
 
     public static read(reader: BinaryFileReader, count: number): readonly DirectoryEntry[] {
@@ -411,16 +409,77 @@ class WadFile {
     }
 }
 
+class HitTester<TInfo> {
+    // Storing in Int16Array to (hopefully...) improve memory locality and speed.
+    private points: Int16Array | null = null;
+    private index: number = 0;
+    private infos: TInfo[] = [];
+    private count: number = 0;
+
+    public startUpdate(count: number): void {
+        if (this.count < count) {
+            this.points = new Int16Array(count * 3);
+            this.infos = new Array(count);
+        }
+
+        this.index = 0;
+        this.count = count;
+    }
+
+    public addPoint(x: i16, y: i16, radius: i16, info: TInfo): void {
+        if (this.points == null) throw new Error("Object not initialized.");
+
+        const pointsIndex = this.index * 3;
+
+        this.points[pointsIndex] = x;
+        this.points[pointsIndex + 1] = y;
+        this.points[pointsIndex + 2] = radius;
+        this.infos[this.index] = info;
+
+        ++this.index;
+    }
+
+    public hitTest(x: i16, y: i16): {
+        info: TInfo,
+        index: number
+    } | null {
+        const points = this.points;
+        if (points == null) return null;
+
+        let pointIndex = 0;
+        for (let i = 0; i < this.count; ++i) {
+            const pointX = points[pointIndex++];
+            const pointY = points[pointIndex++];
+            const pointRadius = points[pointIndex++];
+
+            const dx = Math.abs(pointX - x);
+            if (dx > pointRadius) continue;
+
+            const dy = Math.abs(pointY - y);
+            if (dy > pointRadius) continue;
+
+            if (Math.pow(dx, 2) + Math.pow(dy, 2) > Math.pow(pointRadius, 2)) continue;
+
+            return { info: this.infos[i], index: i };
+        }
+
+        return null;
+    }
+}
 
 class MapView {
     private readonly wad: Promise<WadFile>;
+    private readonly thingHitTester = new HitTester<ThingEntry>();
 
     private scale = 1;
     private baseX: number;
     private baseY: number;
     private currentMap: MapEntry | undefined;
-    private readonly canvasWidth: number;
-    private readonly canvasHeight: number;
+    private canvasWidth: number;
+    private canvasHeight: number;
+    private highlightedThingIndex: number = -1;
+    private awaitingRender = false;
+    private dashedStrokeOffset: number = 0;
 
     constructor(private readonly canvas: HTMLCanvasElement) {
         canvas.style.position = "fixed";
@@ -433,7 +492,7 @@ class MapView {
         this.baseY = canvas.height / 2;
 
         this.wad = new Promise<WadFile>((resolve, _reject) => {
-            new UserFileReader(canvas, (file) => {
+            new UserFileInput(canvas, (file) => {
                 const wad = new WadFile(file);
                 console.log("wad", wad);
                 resolve(wad);
@@ -446,6 +505,14 @@ class MapView {
             if (this.scale < .025) this.scale = .025;
             // this.baseX += (event.offsetX - this.baseX) * .1;
             // this.baseY += (event.offsetY - this.baseY) * .1;
+            this.redraw();
+        });
+
+        window.addEventListener("resize", (_event) => {
+            this.canvas.width  = window.innerWidth;
+            this.canvas.height = window.innerHeight;
+            this.canvasWidth = canvas.width;
+            this.canvasHeight = canvas.height;
             this.redraw();
         });
 
@@ -463,20 +530,34 @@ class MapView {
         });
 
         canvas.addEventListener("mousemove", (event) => {
+            const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
+            const newHighlightedIndex = hitResult?.index ?? -1;
+            if (this.highlightedThingIndex != newHighlightedIndex) {
+                console.log(hitResult?.info, hitResult?.info?.description);
+                this.highlightedThingIndex = newHighlightedIndex;
+                this.dashedStrokeOffset = 0;
+                this.redraw();
+            }
+
             if (isMouseDown == false) return;
 
             if (lastMouseEvent != null) {
-                this.baseX -= lastMouseEvent.x - event.x;
-                this.baseY -= lastMouseEvent.y - event.y;
-
+                this.baseX -= lastMouseEvent.offsetX - event.offsetX;
+                this.baseY -= lastMouseEvent.offsetY - event.offsetY;
                 this.redraw();
             }
 
             lastMouseEvent = event;
         });
-    }
 
-    private awaitingRender = false;
+        setInterval(() => {
+            if (this.highlightedThingIndex == -1) return;
+            --this.dashedStrokeOffset;
+            this.redraw();
+        }, 40);
+
+        this.redraw();
+    }
 
     private redraw(): void {
         if (this.awaitingRender) return;
@@ -541,47 +622,91 @@ class MapView {
     }
 
     private redraw2d(): void {
-        const map = this.currentMap;
-        if (map == null) return;
-
         const context = this.canvas.getContext("2d")!;
         context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+
+        const map = this.currentMap;
+        if (map == null) {
+            context.font = "40px serif";
+            const metrics = context.measureText("Drag & Drop WAD");
+            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+            context.fillText(
+                "Drag & Drop WAD",
+                this.canvasWidth / 2 - metrics.width / 2,
+                this.canvasHeight / 2 - actualHeight / 2,
+                this.canvasWidth);
+            return;
+        }
+
         context.lineWidth = 1;
-        for (const def of map.linedefs) {
+        for (const linedef of map.linedefs) {
             context.beginPath();
-            context.strokeStyle = def.hasFlag(LinedefFlags.SECRET) ? "red" : "black";
-            context.moveTo(def.vertexA.x * this.scale + this.baseX, def.vertexA.y * this.scale + this.baseY);
-            context.lineTo(def.vertexB.x * this.scale + this.baseX, def.vertexB.y * this.scale + this.baseY);
+            context.strokeStyle = linedef.hasFlag(LinedefFlags.SECRET) ? "red" : "black";
+            context.moveTo(linedef.vertexA.x * this.scale + this.baseX, linedef.vertexA.y * -1 * this.scale + this.baseY);
+            context.lineTo(linedef.vertexB.x * this.scale + this.baseX, linedef.vertexB.y * -1 * this.scale + this.baseY);
             context.stroke();
         }
 
+        let thingIndex = 0;
+        this.thingHitTester.startUpdate(map.things.length);
         for (const thing of map.things) {
-            if (thing.description == null) continue;
+            if (thing.description == null) {
+                console.info("Unknown thing type", thing);
+                continue;
+            }
+
+            // Are the thing's x/y actually the centers?
+            const centerX = thing.x * this.scale + this.baseX;
+            const centerY = thing.y * -1 * this.scale + this.baseY;
+            const radius = thing.description.radius * this.scale;
+
+            const isHighlighted = thingIndex == this.highlightedThingIndex;
+            this.thingHitTester.addPoint(centerX, centerY, radius, thing);
+            ++thingIndex;
+
+            if (isHighlighted) continue;
 
             if (thing.description.sprite == ThingSprite.BON1) {
                 context.beginPath();
                 context.fillStyle = "blue";
-                context.arc(
-                    thing.x * this.scale + this.baseX,
-                    thing.y * this.scale + this.baseY,
-                    thing.description.radius * this.scale,
-                    0, Math.PI * 2);
+                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
                 context.fill();
             } else {
                 context.beginPath();
                 context.strokeStyle = "green";
-                const centerX = thing.x * this.scale + this.baseX;
-                const centerY = thing.y * this.scale + this.baseY;
-                context.arc(
-                    centerX,
-                    centerY,
-                    thing.description.radius * this.scale,
-                    0, Math.PI * 2);
-                context.moveTo(centerX, centerY);
-                const lineLength = thing.description.radius * this.scale * 2;
+                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                // context.moveTo(centerX, centerY);
+                // const lineLength = thing.description.radius * this.scale * 2;
                 // context.lineTo(
                 context.stroke();
             }
+        }
+
+        // Draw last to allow the box to have highest Z order.
+        if (this.highlightedThingIndex != -1) {
+            const thing = map.things[this.highlightedThingIndex];
+
+            const centerX = thing.x * this.scale + this.baseX;
+            const centerY = thing.y * -1 * this.scale + this.baseY;
+            const radius = thing.description!.radius * this.scale;
+
+            context.beginPath();
+            context.strokeStyle = "red";
+            context.setLineDash([6 * this.scale, 6 * this.scale]);
+            context.lineDashOffset = this.dashedStrokeOffset;
+            context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+            context.stroke();
+            context.setLineDash([]);
+
+            context.beginPath();
+            const boxX = centerX - radius;
+            const boxY = centerY + radius;
+            context.clearRect(boxX, boxY, 300, 100);
+            context.rect(boxX, boxY, 300, 100);
+            context.font = "12pt serif";
+            context.fillStyle = "Black";
+            context.fillText(thing.description?.description ?? "", boxX + 10, boxY + 10, 300);
+            context.stroke();
         }
     }
 
@@ -592,6 +717,6 @@ class MapView {
     }
 }
 
-const el = document.querySelector<HTMLCanvasElement>(".loadingzone")!;
+const el = document.querySelector<HTMLCanvasElement>("canvas")!;
 const mapView = new MapView(el);
 mapView.displayLevel("MAP01");
