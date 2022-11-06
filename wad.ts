@@ -5,31 +5,6 @@ type i16 = number;
 
 type number_t = u8 | u16 | u32 | i16;
 
-class UserFileInput {
-    constructor(target: HTMLElement, loaded: (userFile: ArrayBuffer) => void) {
-        target.addEventListener("dragover", (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-        });
-
-        target.addEventListener("dragleave", (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-        });
-
-        target.addEventListener("drop", (event) => {
-            event.preventDefault();
-            const file = event.dataTransfer!.files[0]
-            const reader = new FileReader();
-            reader.addEventListener("loadend", (loadEvent) => {
-                loaded(reader.result as ArrayBuffer);
-            });
-
-            reader.readAsArrayBuffer(file);
-        });
-    }
-}
-
 class BinaryFileReader {
     public position: number = 0;
 
@@ -63,9 +38,11 @@ class BinaryFileReader {
         this.position = position;
     }
 
-    public pushPosition(newPosition: number): void {
+    public pushPosition(newPosition?: number): void {
         this.storedPositions.push(this.position);
-        this.position = newPosition;
+        if (newPosition !== undefined) {
+            this.position = newPosition;
+        }
     }
 
     public popPosition(): void {
@@ -99,6 +76,12 @@ class BinaryFileReader {
         return result;
     }
 
+    public readArray(length: number): Uint8Array {
+        const array = this.u8.slice(this.position, this.position + length);
+        this.position += length;
+        return array;
+    }
+
     public readFixedLengthString(length: number): string {
         const start = this.position;
         let sub = 0;
@@ -115,7 +98,7 @@ class BinaryFileReader {
     }
 }
 
-class WadInfo {
+class WadHeader {
     public readonly identifier: u32;
     public readonly numlumps: u32;
     public readonly infotableofs: u32;
@@ -124,6 +107,25 @@ class WadInfo {
         this.identifier = reader.readU32();
         this.numlumps = reader.readU32();
         this.infotableofs = reader.readU32();
+    }
+}
+
+class WadFile {
+    public readonly wadInfo: WadHeader;
+    public readonly directory: readonly DirectoryEntry[];
+    public readonly maps: readonly MapEntry[];
+    public readonly patches: Readonly<{[name: string]: PatchEntry}>;
+
+    private readonly reader: BinaryFileReader;
+
+    constructor(file: ArrayBuffer) {
+        this.reader = new BinaryFileReader(file);
+        this.wadInfo = new WadHeader(this.reader);
+
+        this.reader.seek(this.wadInfo.infotableofs);
+        this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
+        this.maps = MapEntry.readAll(this, this.reader, this.directory);
+        this.patches = PatchEntry.readAll(this, this.reader);
     }
 }
 
@@ -143,8 +145,6 @@ class BoundingBox {
 
 // https://doomwiki.org/wiki/Node
 class NodeEntry {
-    public static size = 28;
-
     public readonly x: i16;
     public readonly y: i16;
     public readonly dx: i16;
@@ -240,7 +240,7 @@ class ThingEntry {
         this.angle = reader.readU16();
         this.type = reader.readU16();
         this.spawnFlags = reader.readU16();
-        this.description = thingDescriptions[this.type];
+        this.description = Things.descriptions[this.type];
     }
 
     public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly ThingEntry[] {
@@ -271,37 +271,133 @@ enum LinedefFlags {
     BLOCKEVERYTHING = 0x8000, // blocks everything (includes gunshots & missiles) 	ZDoom 	blockeverything 	BLOCKF_EVERYTHING
 }
 
-class LiknedefEntry {
+class LinedefEntry {
     public readonly vertexAIndex: u16;
     public readonly vertexBIndex: u16;
     public readonly flags: LinedefFlags; // u16
     public readonly linetype: u16;
     public readonly tag: u16;
-    public readonly sidedefRight: u16;
-    public readonly sidedefLeft: u16;
+    public readonly sidedefRightIndex: u16;
+    public readonly sidedefLeftIndex: u16;
 
-    public readonly vertexA: Vertex;
-    public readonly vertexB: Vertex;
+    public get vertexA(): Vertex { return this.map.vertexes[this.vertexAIndex]; }
+    public get vertexB(): Vertex { return this.map.vertexes[this.vertexBIndex]; }
+    public get sidedefRight(): SideDefEntry { return this.map.sidedefs[this.sidedefRightIndex]; }
+    public get sidedefLeft(): SideDefEntry | null { return this.sidedefLeftIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefLeftIndex]; }
 
-    constructor(reader: BinaryFileReader, vertexes: readonly Vertex[]) {
+    constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.vertexAIndex = reader.readU16();
         this.vertexBIndex = reader.readU16();
         this.flags = reader.readU16();
         this.linetype = reader.readU16();
         this.tag = reader.readU16();
-        this.sidedefRight = reader.readU16();
-        this.sidedefLeft = reader.readU16();
-
-        this.vertexA = vertexes[this.vertexAIndex];
-        this.vertexB = vertexes[this.vertexBIndex];
+        this.sidedefRightIndex = reader.readU16();
+        this.sidedefLeftIndex = reader.readU16();
     }
 
     public hasFlag(flag: LinedefFlags): boolean {
         return (this.flags & flag) == flag;
     }
 
-    public static readAll(entry: DirectoryEntry, reader: BinaryFileReader, vertexes: readonly Vertex[]): readonly LiknedefEntry[] {
-        return entry.readAll(reader, (reader) => new LiknedefEntry(reader, vertexes));
+    public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly LinedefEntry[] {
+        return entry.readAll(reader, (reader) => new LinedefEntry(map, reader));
+    }
+}
+
+class SideDefEntry {
+    public readonly xOffset: i16;
+    public readonly yOffset: i16;
+    public readonly textureNameUpper: string;
+    public readonly textureNameLower: string;
+    public readonly textureNameMiddle: string;
+    public readonly sectorIndex: u16;
+
+    public get textureUpper(): PatchEntry { return this.map.wadFile.patches[this.textureNameUpper]; }
+    public get textureLower(): PatchEntry { return this.map.wadFile.patches[this.textureNameLower]; }
+    public get textureMiddle(): PatchEntry { return this.map.wadFile.patches[this.textureNameMiddle]; }
+    public get sector(): SectorEntry { return this.map.sectors[this.sectorIndex]; }
+
+    constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
+        this.xOffset = reader.readI16();
+        this.yOffset = reader.readI16();
+        this.textureNameUpper = reader.readFixedLengthString(8);
+        this.textureNameLower = reader.readFixedLengthString(8);
+        this.textureNameMiddle = reader.readFixedLengthString(8);
+        this.sectorIndex = reader.readU16();
+    }
+
+    public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly SideDefEntry[] {
+        return entry.readAll(reader, (reader) => new SideDefEntry(map, reader));
+    }
+}
+
+class SectorEntry {
+    public readonly floorHeight: i16;
+    public readonly ceilingHeight: i16;
+    public readonly textureNameFloor: string;
+    public readonly textureNameCeiling: string;
+    public readonly lightLevel: i16;
+    public readonly specialType: i16;
+    public readonly tag: i16;
+
+    public get textureFloor(): PatchEntry { return this.map.wadFile.patches[this.textureNameFloor]; }
+    public get textureCeiling(): PatchEntry { return this.map.wadFile.patches[this.textureNameCeiling]; }
+
+    constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
+        this.floorHeight = reader.readI16();
+        this.ceilingHeight = reader.readI16();
+        this.textureNameFloor = reader.readFixedLengthString(8);
+        this.textureNameCeiling = reader.readFixedLengthString(8);
+        this.lightLevel = reader.readI16();
+        this.specialType = reader.readI16();
+        this.tag = reader.readI16();
+    }
+
+    public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly SectorEntry[] {
+        return entry.readAll(reader, (reader) => new SectorEntry(map, reader));
+    }
+}
+
+class SegmentEntry {
+    public readonly vertextStartIndex: i16;
+    public readonly vertextEndIndex: i16;
+    public readonly angle: i16;
+    public readonly linedefIndex: i16;
+    public readonly direction: i16; // Direction: 0 (same as linedef) or 1 (opposite of linedef)
+    public readonly offset: i16; // Offset: distance along linedef to start of seg
+
+    public get vertexes(): readonly Vertex[] { return this.map.vertexes.slice(this.vertextStartIndex, this.vertextEndIndex); }
+    public get linedef(): LinedefEntry { return this.map.linedefs[this.linedefIndex]; }
+
+    constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
+        this.vertextStartIndex = reader.readI16();
+        this.vertextEndIndex = reader.readI16();
+        this.angle = reader.readI16();
+        this.linedefIndex = reader.readI16();
+        this.direction = reader.readI16();
+        this.offset = reader.readI16();
+    }
+
+    public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly SegmentEntry[] {
+        return entry.readAll(reader, (reader) => new SegmentEntry(map, reader));
+    }
+}
+
+class SubSectorEntry {
+    public readonly segCount: i16;
+    public readonly firstSegIndex: i16;
+
+    public readonly segments: readonly SegmentEntry[];
+
+    constructor( map: MapEntry, reader: BinaryFileReader) {
+        this.segCount = reader.readI16();
+        this.firstSegIndex = reader.readI16();
+
+        this.segments = map.segments.slice(this.firstSegIndex, this.segCount);
+    }
+
+    public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly SubSectorEntry[] {
+        return entry.readAll(reader, (reader) => new SubSectorEntry(map, reader));
     }
 }
 
@@ -333,30 +429,39 @@ interface IMapDirectoryEntry {
 }
 
 class MapEntry {
+    public readonly wadFile: WadFile;
     public readonly name: string;
     public readonly entries: IMapDirectoryEntry;
     public readonly vertexes: readonly Vertex[];
-    public readonly linedefs: readonly LiknedefEntry[];
+    public readonly linedefs: readonly LinedefEntry[];
+    public readonly sidedefs: readonly SideDefEntry[];
     public readonly things: readonly ThingEntry[];
+    public readonly segments: readonly SegmentEntry[];
+    public readonly subSectors: readonly SubSectorEntry[];
+    public readonly sectors: readonly SectorEntry[];
 
     private readonly reader: BinaryFileReader
 
-    constructor(reader: BinaryFileReader, name: string, entries: IMapDirectoryEntry) {
+    constructor(wadFile: WadFile, reader: BinaryFileReader, name: string, entries: IMapDirectoryEntry) {
+        this.wadFile = wadFile;
         this.reader = reader;
         this.name = name;
         this.entries = entries;
         this.vertexes = Vertex.readAll(entries.vertexes, reader);
-        this.linedefs = LiknedefEntry.readAll(entries.linedefs, reader, this.vertexes);
+        this.linedefs = LinedefEntry.readAll(this, entries.linedefs, reader);
+        this.sidedefs = SideDefEntry.readAll(this, entries.sidedefs, reader);
         this.things = ThingEntry.readAll(entries.things, reader);
+        this.segments = SegmentEntry.readAll(this, entries.segs, reader);
+        this.subSectors = SubSectorEntry.readAll(this, entries.ssectors, reader);
+        this.sectors = SectorEntry.readAll(this, entries.sectors, reader);
     }
 
     public getNodes(): readonly NodeEntry[] {
         return NodeEntry.loadAll(this.reader, this.entries.nodes);
     }
 
-    public static loadAll(reader: BinaryFileReader, entries: readonly DirectoryEntry[]): readonly MapEntry[] {
+    public static readAll(wadFile: WadFile, reader: BinaryFileReader, entries: readonly DirectoryEntry[]): readonly MapEntry[] {
         const maps: MapEntry[] = [];
-
         let i = 0;
 
         function demandNextEntry(type: MapEntryName): DirectoryEntry {
@@ -372,7 +477,7 @@ class MapEntry {
         for (; i < entries.length; ++i) {
             const entry = entries[i];
             if (entry.isMapEntry()) {
-                maps.push(new MapEntry(reader, entry.name, {
+                maps.push(new MapEntry(wadFile, reader, entry.name, {
                     map: entry,
                     things: demandNextEntry(MapEntryName.THINGS),
                     linedefs: demandNextEntry(MapEntryName.LINEDEFS),
@@ -392,331 +497,70 @@ class MapEntry {
     }
 }
 
-class WadFile {
-    public readonly wadInfo: WadInfo;
-    public readonly directory: readonly DirectoryEntry[];
-    public readonly maps: readonly MapEntry[];
+class PatchEntry {
+    public readonly width: u16;
+    public readonly height: u16;
+    public readonly leftOffset: i16;
+    public readonly topOffset: i16;
+    public readonly columnofs: readonly u32[];
+    public readonly posts: readonly PatchPostEntry[];
 
-    private readonly reader: BinaryFileReader;
-
-    constructor(file: ArrayBuffer) {
-        this.reader = new BinaryFileReader(file);
-        this.wadInfo = new WadInfo(this.reader);
-
-        this.reader.seek(this.wadInfo.infotableofs);
-        this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
-        this.maps = MapEntry.loadAll(this.reader, this.directory);
-    }
-}
-
-class HitTester<TInfo> {
-    // Storing in Int16Array to (hopefully...) improve memory locality and speed.
-    private points: Int16Array | null = null;
-    private index: number = 0;
-    private infos: TInfo[] = [];
-    private count: number = 0;
-
-    public startUpdate(count: number): void {
-        if (this.count < count) {
-            this.points = new Int16Array(count * 3);
-            this.infos = new Array(count);
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+        const relative = reader.position;
+        this.width = reader.readU16();
+        this.height = reader.readU16();
+        this.leftOffset = reader.readI16();
+        this.topOffset = reader.readI16();
+        const columnofs: u32[] = [];
+        for (let i = 0; i < this.width; ++i) {
+            columnofs.push(reader.readU32());
         }
-
-        this.index = 0;
-        this.count = count;
-    }
-
-    public addPoint(x: i16, y: i16, radius: i16, info: TInfo): void {
-        if (this.points == null) throw new Error("Object not initialized.");
-
-        const pointsIndex = this.index * 3;
-
-        this.points[pointsIndex] = x;
-        this.points[pointsIndex + 1] = y;
-        this.points[pointsIndex + 2] = radius;
-        this.infos[this.index] = info;
-
-        ++this.index;
-    }
-
-    public hitTest(x: i16, y: i16): {
-        info: TInfo,
-        index: number
-    } | null {
-        const points = this.points;
-        if (points == null) return null;
-
-        let pointIndex = 0;
-        for (let i = 0; i < this.count; ++i) {
-            const pointX = points[pointIndex++];
-            const pointY = points[pointIndex++];
-            const pointRadius = points[pointIndex++];
-
-            const dx = Math.abs(pointX - x);
-            if (dx > pointRadius) continue;
-
-            const dy = Math.abs(pointY - y);
-            if (dy > pointRadius) continue;
-
-            if (Math.pow(dx, 2) + Math.pow(dy, 2) > Math.pow(pointRadius, 2)) continue;
-
-            return { info: this.infos[i], index: i };
+        this.columnofs = columnofs;
+        // Save position at the end of the patch entry.
+        reader.pushPosition();
+        const posts: PatchPostEntry[] = [];
+        for (const offset of columnofs) {
+            reader.position = offset + relative;
+            posts.push(new PatchPostEntry(reader));
         }
-
-        return null;
-    }
-}
-
-class MapView {
-    private readonly wad: Promise<WadFile>;
-    private readonly thingHitTester = new HitTester<ThingEntry>();
-
-    private scale = 1;
-    private baseX: number;
-    private baseY: number;
-    private currentMap: MapEntry | undefined;
-    private canvasWidth: number;
-    private canvasHeight: number;
-    private highlightedThingIndex: number = -1;
-    private awaitingRender = false;
-    private dashedStrokeOffset: number = 0;
-
-    constructor(private readonly canvas: HTMLCanvasElement) {
-        canvas.style.position = "fixed";
-        canvas.width  = window.innerWidth;
-        canvas.height = window.innerHeight;
-        this.canvasWidth = canvas.width;
-        this.canvasHeight = canvas.height;
-
-        this.baseX = canvas.width / 2;
-        this.baseY = canvas.height / 2;
-
-        this.wad = new Promise<WadFile>((resolve, _reject) => {
-            new UserFileInput(canvas, (file) => {
-                const wad = new WadFile(file);
-                console.log("wad", wad);
-                resolve(wad);
-            });
-        });
-
-        document.addEventListener("wheel", (event) => {
-            const step = event.shiftKey ? .1 : .025;
-            this.scale += (event.deltaY < 0 ? 1 : -1) * step;
-            if (this.scale < .025) this.scale = .025;
-            // this.baseX += (event.offsetX - this.baseX) * .1;
-            // this.baseY += (event.offsetY - this.baseY) * .1;
-            this.redraw();
-        });
-
-        window.addEventListener("resize", (_event) => {
-            this.canvas.width  = window.innerWidth;
-            this.canvas.height = window.innerHeight;
-            this.canvasWidth = canvas.width;
-            this.canvasHeight = canvas.height;
-            this.redraw();
-        });
-
-        let isMouseDown = false;
-        let lastMouseEvent: MouseEvent | null = null;
-
-        canvas.addEventListener("mousedown", (event) => {
-            isMouseDown = true;
-            lastMouseEvent = event;
-        });
-
-        canvas.addEventListener("mouseup", (_event) => {
-            isMouseDown = false;
-            lastMouseEvent = null;
-        });
-
-        canvas.addEventListener("mousemove", (event) => {
-            const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
-            const newHighlightedIndex = hitResult?.index ?? -1;
-            if (this.highlightedThingIndex != newHighlightedIndex) {
-                console.log(hitResult?.info, hitResult?.info?.description);
-                this.highlightedThingIndex = newHighlightedIndex;
-                this.dashedStrokeOffset = 0;
-                this.redraw();
-            }
-
-            if (isMouseDown == false) return;
-
-            if (lastMouseEvent != null) {
-                this.baseX -= lastMouseEvent.offsetX - event.offsetX;
-                this.baseY -= lastMouseEvent.offsetY - event.offsetY;
-                this.redraw();
-            }
-
-            lastMouseEvent = event;
-        });
-
-        setInterval(() => {
-            if (this.highlightedThingIndex == -1) return;
-            --this.dashedStrokeOffset;
-            this.redraw();
-        }, 40);
-
-        this.redraw();
+        this.posts = posts;
+        reader.popPosition();
     }
 
-    private redraw(): void {
-        if (this.awaitingRender) return;
-        this.awaitingRender = true;
+    public static readAll(file: WadFile, reader: BinaryFileReader): Readonly<{[name: string]: PatchEntry}> {
+        const patches: {[name: string]: PatchEntry} = {};
 
-        requestAnimationFrame(() => {
-            this.redraw2d();
-            this.awaitingRender = false;
-        });
-    }
+        const firstSpriteIndex = file.directory.findIndex((dir) => dir.name == "S_START" || dir.name == "SS_START");
+        if (firstSpriteIndex == -1) return patches;
 
-    private redraw3d(): void {
-        const gl = this.canvas.getContext("webgl")!;
-        gl.clearColor(0.0, 0.0, 0.0, 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-
-        const positionBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-        const positions = [
-            1.0,  1.0,
-           -1.0,  1.0,
-            1.0, -1.0,
-           -1.0, -1.0,
-         ];
-         gl.bufferData(gl.ARRAY_BUFFER,
-            new Float32Array(positions),
-            gl.STATIC_DRAW);
-
-        gl.clearColor(0.0, 0.0, 0.0, 1.0);  // Clear to black, fully opaque
-        gl.clearDepth(1.0);                 // Clear everything
-        gl.enable(gl.DEPTH_TEST);           // Enable depth testing
-        gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        const fieldOfView = 45 * Math.PI / 180;   // in radians
-        const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
-        const zNear = 0.1;
-        const zFar = 100.0;
-        const projectionMatrix = mat4.create();
-        const modelViewMatrix = mat4.create();
-        mat4.translate(modelViewMatrix,     // destination matrix
-            modelViewMatrix,     // matrix to translate
-            [-0.0, 0.0, -6.0]);  // amount to translate
-
-        {
-            const numComponents = 2;  // pull out 2 values per iteration
-            const type = gl.FLOAT;    // the data in the buffer is 32bit floats
-            const normalize = false;  // don't normalize
-            const stride = 0;         // how many bytes to get from one set of values to the next
-                                        // 0 = use type and numComponents above
-            const offset = 0;         // how many bytes inside the buffer to start from
-            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-            // gl.vertexAttribPointer(
-            //     programInfo.attribLocations.vertexPosition,
-            //     numComponents,
-            //     type,
-            //     normalize,
-            //     stride,
-            //     offset);
-            // gl.enableVertexAttribArray(
-            //     programInfo.attribLocations.vertexPosition);
-        }
-    }
-
-    private redraw2d(): void {
-        const context = this.canvas.getContext("2d")!;
-        context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
-
-        const map = this.currentMap;
-        if (map == null) {
-            context.font = "40px serif";
-            const metrics = context.measureText("Drag & Drop WAD");
-            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
-            context.fillText(
-                "Drag & Drop WAD",
-                this.canvasWidth / 2 - metrics.width / 2,
-                this.canvasHeight / 2 - actualHeight / 2,
-                this.canvasWidth);
-            return;
-        }
-
-        context.lineWidth = 1;
-        for (const linedef of map.linedefs) {
-            context.beginPath();
-            context.strokeStyle = linedef.hasFlag(LinedefFlags.SECRET) ? "red" : "black";
-            context.moveTo(linedef.vertexA.x * this.scale + this.baseX, linedef.vertexA.y * -1 * this.scale + this.baseY);
-            context.lineTo(linedef.vertexB.x * this.scale + this.baseX, linedef.vertexB.y * -1 * this.scale + this.baseY);
-            context.stroke();
-        }
-
-        let thingIndex = 0;
-        this.thingHitTester.startUpdate(map.things.length);
-        for (const thing of map.things) {
-            if (thing.description == null) {
-                console.info("Unknown thing type", thing);
+        for (let i = firstSpriteIndex + 1; i < file.directory.length; ++i) {
+            const dir = file.directory[i];
+            if (dir.name == "S_END" || dir.name == "SS_END") break;
+            if (dir.size == 0) {
+                console.info("Empty dir entry in sprite list?", dir);
                 continue;
             }
 
-            // Are the thing's x/y actually the centers?
-            const centerX = thing.x * this.scale + this.baseX;
-            const centerY = thing.y * -1 * this.scale + this.baseY;
-            const radius = thing.description.radius * this.scale;
-
-            const isHighlighted = thingIndex == this.highlightedThingIndex;
-            this.thingHitTester.addPoint(centerX, centerY, radius, thing);
-            ++thingIndex;
-
-            if (isHighlighted) continue;
-
-            if (thing.description.sprite == ThingSprite.BON1) {
-                context.beginPath();
-                context.fillStyle = "blue";
-                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                context.fill();
-            } else {
-                context.beginPath();
-                context.strokeStyle = "green";
-                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                // context.moveTo(centerX, centerY);
-                // const lineLength = thing.description.radius * this.scale * 2;
-                // context.lineTo(
-                context.stroke();
-            }
+            patches[dir.name] = new PatchEntry(reader, dir);
         }
 
-        // Draw last to allow the box to have highest Z order.
-        if (this.highlightedThingIndex != -1) {
-            const thing = map.things[this.highlightedThingIndex];
-
-            const centerX = thing.x * this.scale + this.baseX;
-            const centerY = thing.y * -1 * this.scale + this.baseY;
-            const radius = thing.description!.radius * this.scale;
-
-            context.beginPath();
-            context.strokeStyle = "red";
-            context.setLineDash([6 * this.scale, 6 * this.scale]);
-            context.lineDashOffset = this.dashedStrokeOffset;
-            context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-            context.stroke();
-            context.setLineDash([]);
-
-            context.beginPath();
-            const boxX = centerX - radius;
-            const boxY = centerY + radius;
-            context.clearRect(boxX, boxY, 300, 100);
-            context.rect(boxX, boxY, 300, 100);
-            context.font = "12pt serif";
-            context.fillStyle = "Black";
-            context.fillText(thing.description?.description ?? "", boxX + 10, boxY + 10, 300);
-            context.stroke();
-        }
-    }
-
-    public async displayLevel(name: string): Promise<void> {
-        const wad = await this.wad;
-        this.currentMap = wad.maps.find((map) => map.name == name) ?? wad.maps[0];
-        this.redraw();
+        return patches;
     }
 }
 
-const el = document.querySelector<HTMLCanvasElement>("canvas")!;
-const mapView = new MapView(el);
-mapView.displayLevel("MAP01");
+class PatchPostEntry {
+    public readonly topdelta: u8;
+    public readonly length: u8;
+    // public readonly unused: u8;
+    public readonly data: Uint8Array;
+    // public readonly unused2: u8;
+
+    constructor(reader: BinaryFileReader) {
+        this.topdelta = reader.readU8();
+        this.length = reader.readU8();
+        reader.readU8(); // unused
+        this.data = reader.readArray(this.length);
+        reader.readU8(); // unused
+    }
+}

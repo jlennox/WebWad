@@ -141,7 +141,8 @@ enum ThingSprite {
     UNKNOWN = "UKNOWN",
 }
 
-const thingDescriptions: {[itemId: number]: ThingDescription} = {
+class Things {
+  public static readonly descriptions: Readonly<{[itemId: number]: ThingDescription}> = {
     1: {
       "version": "S",
       "radius": 16,
@@ -1250,3 +1251,4 @@ const thingDescriptions: {[itemId: number]: ThingDescription} = {
       "description": "Lost soul"
     }
   }
+}
