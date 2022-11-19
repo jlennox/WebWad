@@ -1433,6 +1433,16 @@ class MapView {
         this.baseX = canvas.width / 2;
         this.baseY = canvas.height / 2;
         this.wad = new Promise((resolve, _reject) => {
+            canvas.addEventListener("dblclick", async (_event) => {
+                console.log(_event);
+                const response = await fetch("./doom1.wad");
+                if (response.status != 200) {
+                    alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
+                    return;
+                }
+                const blob = await response.blob();
+                resolve(new WadFile(await blob.arrayBuffer()));
+            });
             new UserFileInput(canvas, (file) => {
                 const wad = new WadFile(file);
                 console.log("wad", wad);
@@ -1441,11 +1451,25 @@ class MapView {
         });
         document.addEventListener("wheel", (event) => {
             const step = event.shiftKey ? .1 : .025;
+            const oldScale = this.scale;
             this.scale += (event.deltaY < 0 ? 1 : -1) * step;
             if (this.scale < .025)
                 this.scale = .025;
-            // this.baseX += (event.offsetX - this.baseX) * .1;
-            // this.baseY += (event.offsetY - this.baseY) * .1;
+            const scaleDifference = oldScale - this.scale;
+            if (scaleDifference != 0) {
+                const widthChange = this.canvas.width * scaleDifference;
+                const heightChange = this.canvas.height * scaleDifference;
+                const cursorX = event.offsetX / this.canvas.width;
+                const cursorY = event.offsetY / this.canvas.height;
+                console.log({ x: widthChange * cursorX, y: heightChange * cursorY, scaleDifference, widthChange, heightChange, cursorX, cursorY, });
+                // this.baseX -= widthChange * cursorX; //cursorX * this.canvas.width * this.scale;
+                // this.baseY -= heightChange * cursorY; //cursorY * this.canvas.height * this.scale;
+                // this.baseX -= (event.offsetX - this.baseX) * step;
+                // this.baseY -= (event.offsetY - this.baseY) * step;
+                // This does not work because the origin is not the top left.
+                this.baseX -= widthChange * cursorX;
+                this.baseY -= heightChange * cursorY;
+            }
             this.redraw();
         });
         window.addEventListener("resize", (_event) => {
@@ -1456,14 +1480,11 @@ class MapView {
             this.redraw();
         });
         let isMouseDown = false;
-        let lastMouseEvent = null;
-        canvas.addEventListener("mousedown", (event) => {
+        canvas.addEventListener("mousedown", (_event) => {
             isMouseDown = true;
-            lastMouseEvent = event;
         });
         canvas.addEventListener("mouseup", (_event) => {
             isMouseDown = false;
-            lastMouseEvent = null;
         });
         canvas.addEventListener("mousemove", (event) => {
             const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
@@ -1474,14 +1495,11 @@ class MapView {
                 this.dashedStrokeOffset = 0;
                 this.redraw();
             }
-            if (isMouseDown == false)
-                return;
-            if (lastMouseEvent != null) {
-                this.baseX -= lastMouseEvent.offsetX - event.offsetX;
-                this.baseY -= lastMouseEvent.offsetY - event.offsetY;
+            if (isMouseDown) {
+                this.baseX += event.movementX;
+                this.baseY += event.movementY;
                 this.redraw();
             }
-            lastMouseEvent = event;
         });
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
@@ -1571,6 +1589,8 @@ class MapView {
         context.font = "40px serif";
         drawCentered("Drag & Drop WAD", this.canvasWidth, this.canvasHeight);
         context.font = "20px serif";
+        drawCentered("Or double click to load the shareware WAD", this.canvasWidth, this.canvasHeight + 40);
+        context.font = "20px serif";
         drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse", this.canvasWidth, this.canvasHeight);
     }
     redraw2d() {
@@ -1580,6 +1600,13 @@ class MapView {
         if (map == null) {
             this.drawHelpText2d(context);
             return;
+        }
+        // Draws a circle at the origin.
+        if (false) {
+            context.beginPath();
+            context.fillStyle = "red";
+            context.arc(this.baseX, this.baseY, 30, 0, Math.PI * 2);
+            context.fill();
         }
         context.lineWidth = 1;
         for (const linedef of map.linedefs) {
@@ -1595,7 +1622,6 @@ class MapView {
         this.thingHitTester.startUpdate(map.things.length);
         for (const thing of map.things) {
             if (thing.description == null) {
-                // console.info("Unknown thing type", thing);
                 continue;
             }
             // Are the thing's x/y actually the centers?
@@ -1658,6 +1684,19 @@ class MapView {
             this.baseX = (player1Start.x + this.canvasWidth / 2) * this.scale;
             this.baseY = (player1Start.y + this.canvasHeight / 2) * this.scale;
         }
+        let x = Number.MAX_VALUE, y = Number.MAX_VALUE, dx = Number.MIN_VALUE, dy = Number.MIN_VALUE;
+        for (const linedef of this.currentMap.linedefs) {
+            x = Math.min(x, linedef.vertexA.x);
+            x = Math.min(x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y * 1);
+            y = Math.min(y, linedef.vertexB.y * 1);
+            dx = Math.max(dx, linedef.vertexA.x);
+            dx = Math.max(dx, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y * 1);
+            dy = Math.max(dy, linedef.vertexB.y * 1);
+        }
+        // this.baseX = x;
+        // this.baseY = y;
         this.redraw();
     }
 }
@@ -1860,6 +1899,9 @@ class ThingEntry {
         this.type = reader.readU16();
         this.spawnFlags = reader.readU16();
         this.description = Things.descriptions[this.type];
+        if (this.description == null) {
+            console.info("Unknown thing type", this);
+        }
     }
     static readAll(entry, reader) {
         return entry.readAll(reader, (reader) => new ThingEntry(reader));

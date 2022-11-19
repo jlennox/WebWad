@@ -241,6 +241,10 @@ class ThingEntry {
         this.type = reader.readU16();
         this.spawnFlags = reader.readU16();
         this.description = Things.descriptions[this.type];
+
+        if (this.description == null) {
+            console.info("Unknown thing type", this);
+        }
     }
 
     public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly ThingEntry[] {
