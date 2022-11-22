@@ -5,6 +5,9 @@ class HitTester<TInfo> {
     private infos: TInfo[] = [];
     private count: number = 0;
 
+    constructor(private readonly matrix: DOMMatrix) {
+    }
+
     public startUpdate(count: number): void {
         if (this.count < count) {
             this.points = new Int16Array(count * 3);
@@ -35,16 +38,18 @@ class HitTester<TInfo> {
         const points = this.points;
         if (points == null) return null;
 
+        const translated = new DOMPoint(x, y).matrixTransform(this.matrix.inverse());
+
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {
             const pointX = points[pointIndex++];
             const pointY = points[pointIndex++];
             const pointRadius = points[pointIndex++];
 
-            const dx = Math.abs(pointX - x);
+            const dx = Math.abs(pointX - translated.x);
             if (dx > pointRadius) continue;
 
-            const dy = Math.abs(pointY - y);
+            const dy = Math.abs(pointY - translated.y);
             if (dy > pointRadius) continue;
 
             if (Math.pow(dx, 2) + Math.pow(dy, 2) > Math.pow(pointRadius, 2)) continue;

@@ -23,19 +23,24 @@ class UserFileInput {
     }
 }
 
-class MapView {
-    private readonly wad: Promise<WadFile>;
-    private readonly thingHitTester = new HitTester<ThingEntry>();
+function matVecMul(m: any, v: any) {
+    return {
+        x: m.a * v.x + m.c * v.y + m.e,
+        y: m.b * v.x + m.d * v.y + m.f
+    };
+}
 
-    private scale: number = 1;
-    private baseX: number;
-    private baseY: number;
+class MapView2D {
+    private readonly wad: Promise<WadFile>;
+    private readonly thingHitTester;
+
     private currentMap: MapEntry | undefined;
     private canvasWidth: number;
     private canvasHeight: number;
     private highlightedThingIndex: number = -1;
     private awaitingRender: boolean = false;
     private dashedStrokeOffset: number = 0;
+    private readonly viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
 
     constructor(private readonly canvas: HTMLCanvasElement) {
         canvas.style.position = "fixed";
@@ -44,20 +49,24 @@ class MapView {
         this.canvasWidth = canvas.width;
         this.canvasHeight = canvas.height;
 
-        this.baseX = canvas.width / 2;
-        this.baseY = canvas.height / 2;
+        this.thingHitTester = new HitTester<ThingEntry>(this.viewMatrix)
 
         this.wad = new Promise<WadFile>((resolve, _reject) => {
             canvas.addEventListener("dblclick", async (_event) => {
-                console.log(_event);
-                const response = await fetch("./doom1.wad");
-                if (response.status != 200) {
-                    alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
-                    return;
-                }
+                try {
+                    canvas.classList.add("loading");
+                    const response = await fetch("./doom1.wad");
+                    if (response.status != 200) {
+                        alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
+                        return;
+                    }
 
-                const blob = await response.blob()
-                resolve(new WadFile(await blob.arrayBuffer()));
+                    const blob = await response.blob()
+                    resolve(new WadFile(await blob.arrayBuffer()));
+                }
+                finally {
+                    canvas.classList.remove("loading");
+                }
             });
 
             new UserFileInput(canvas, (file) => {
@@ -68,36 +77,24 @@ class MapView {
         });
 
         document.addEventListener("wheel", (event) => {
-            const step = event.shiftKey ? .1 : .025;
-            const oldScale = this.scale;
-            this.scale += (event.deltaY < 0 ? 1 : -1) * step;
-            if (this.scale < .025) this.scale = .025;
+            if (this.currentMap == null) return;
 
-            const scaleDifference = oldScale - this.scale;
-            if (scaleDifference != 0) {
-                const widthChange = this.canvas.width * scaleDifference;
-                const heightChange = this.canvas.height * scaleDifference;
-                const cursorX = event.offsetX / this.canvas.width;
-                const cursorY = event.offsetY / this.canvas.height;
-                console.log({x: widthChange * cursorX, y: heightChange * cursorY, scaleDifference, widthChange, heightChange, cursorX, cursorY, });
-                // this.baseX -= widthChange * cursorX; //cursorX * this.canvas.width * this.scale;
-                // this.baseY -= heightChange * cursorY; //cursorY * this.canvas.height * this.scale;
-                // this.baseX -= (event.offsetX - this.baseX) * step;
-                // this.baseY -= (event.offsetY - this.baseY) * step;
+            const pos = matVecMul(this.viewMatrix.inverse(), {
+                x: event.clientX * 1,
+                y: event.clientY * 1
+            });
 
-                // This does not work because the origin is not the top left.
-                this.baseX -= widthChange * cursorX;
-                this.baseY -= heightChange * cursorY;
-            }
-
+            this.viewMatrix.translateSelf(pos.x, pos.y);
+            this.viewMatrix.scaleSelf(event.deltaY < 0 ? 1.1 : 0.9);
+            this.viewMatrix.translateSelf(-pos.x, -pos.y);
             this.redraw();
         });
 
         window.addEventListener("resize", (_event) => {
             this.canvas.width  = window.innerWidth;
             this.canvas.height = window.innerHeight;
-            this.canvasWidth = canvas.width;
-            this.canvasHeight = canvas.height;
+            this.canvasWidth = this.canvas.width;
+            this.canvasHeight = this.canvas.height;
             this.redraw();
         });
 
@@ -112,6 +109,8 @@ class MapView {
         });
 
         canvas.addEventListener("mousemove", (event) => {
+            if (this.currentMap == null) return;
+
             const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
             const newHighlightedIndex = hitResult?.index ?? -1;
             if (this.highlightedThingIndex != newHighlightedIndex) {
@@ -122,8 +121,11 @@ class MapView {
             }
 
             if (isMouseDown) {
-                this.baseX += event.movementX;
-                this.baseY += event.movementY;
+                const inverse = this.viewMatrix.inverse();
+                const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
+                const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
+
+                this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
                 this.redraw();
             }
         });
@@ -224,6 +226,7 @@ class MapView {
             }
         }
 
+        context.setTransform(undefined);
         context.font = "40px serif";
         drawCentered("Drag & Drop WAD", this.canvasWidth, this.canvasHeight);
         context.font = "20px serif";
@@ -234,7 +237,9 @@ class MapView {
 
     private redraw2d(): void {
         const context = this.canvas.getContext("2d")!;
+        context.setTransform(undefined);
         context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+        context.setTransform(this.viewMatrix);
 
         const map = this.currentMap;
         if (map == null) {
@@ -243,19 +248,27 @@ class MapView {
         }
 
         // Draws a circle at the origin.
-        if (false) {
+        if (true) {
             context.beginPath();
             context.fillStyle = "red";
-            context.arc(this.baseX, this.baseY, 30, 0, Math.PI * 2);
+            context.arc(0, 0, 30, 0, Math.PI * 2);
             context.fill();
         }
 
         context.lineWidth = 1;
+        let i = 0;
         for (const linedef of map.linedefs) {
             context.beginPath();
-            context.strokeStyle = linedef.hasFlag(LinedefFlags.SECRET) ? "red" : "black";
-            context.moveTo(linedef.vertexA.x * this.scale + this.baseX, linedef.vertexA.y * -1 * this.scale + this.baseY);
-            context.lineTo(linedef.vertexB.x * this.scale + this.baseX, linedef.vertexB.y * -1 * this.scale + this.baseY);
+            if (linedef.hasFlag(LinedefFlags.SECRET)) {
+                context.strokeStyle = "red";
+            } else if (linedef.hasFlag(LinedefFlags.DONTDRAW)) {
+                context.strokeStyle = "grey";
+            } else {
+                context.strokeStyle = "black";
+            }
+
+            context.moveTo(linedef.vertexA.x, linedef.vertexA.y);
+            context.lineTo(linedef.vertexB.x, linedef.vertexB.y);
             context.stroke();
         }
 
@@ -270,9 +283,9 @@ class MapView {
             }
 
             // Are the thing's x/y actually the centers?
-            const centerX = thing.x * this.scale + this.baseX;
-            const centerY = thing.y * -1 * this.scale + this.baseY;
-            const radius = thing.description.radius * this.scale;
+            const centerX = thing.x;
+            const centerY = thing.y;
+            const radius = thing.description.radius;
 
             const isHighlighted = thingIndex == this.highlightedThingIndex;
             this.thingHitTester.addPoint(centerX, centerY, radius, thing);
@@ -303,13 +316,13 @@ class MapView {
         if (selectedThingEntry != null) {
             const thing = selectedThingEntry;
 
-            const centerX = thing.x * this.scale + this.baseX;
-            const centerY = thing.y * -1 * this.scale + this.baseY;
-            const radius = thing.description!.radius * this.scale;
+            const centerX = thing.x;
+            const centerY = thing.y;
+            const radius = thing.description!.radius;
 
             context.beginPath();
             context.strokeStyle = "red";
-            context.setLineDash([6 * this.scale, 6 * this.scale]);
+            context.setLineDash([6, 6 ]);
             context.lineDashOffset = this.dashedStrokeOffset;
             context.arc(centerX, centerY, radius, 0, Math.PI * 2);
             context.stroke();
@@ -333,8 +346,7 @@ class MapView {
         const player1Start = this.currentMap.things.find((t) => t.type == 1);
         if (player1Start != undefined) {
             // TODO: Fix. Works really badly on doom1.wad
-            this.baseX = (player1Start.x + this.canvasWidth / 2) * this.scale;
-            this.baseY = (player1Start.y + this.canvasHeight / 2) * this.scale;
+            this.viewMatrix.translateSelf(player1Start.x, player1Start.y);
         }
 
         let x = Number.MAX_VALUE, y = Number.MAX_VALUE, dx = Number.MIN_VALUE, dy = Number.MIN_VALUE;
@@ -355,5 +367,5 @@ class MapView {
 }
 
 const el = document.querySelector<HTMLCanvasElement>("canvas")!;
-const mapView = new MapView(el);
+const mapView = new MapView2D(el);
 mapView.displayLevel("MAP01");
