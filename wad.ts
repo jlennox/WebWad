@@ -497,7 +497,9 @@ class MapEntry {
             }
         }
 
-        return maps;
+        // This should really be parsing out the numbers, but they should happen to order correctly regardless due
+        // to leading 0 padding.
+        return maps.sort((a, b) => a.name < b.name ? -1 : 1);
     }
 }
 

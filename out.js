@@ -1415,31 +1415,13 @@ class UserFileInput {
         });
     }
 }
-function matVecMul(m, v) {
-    return {
-        x: m.a * v.x + m.c * v.y + m.e,
-        y: m.b * v.x + m.d * v.y + m.f
-    };
-}
-class MapView2D {
+class MapView {
     canvas;
     wad;
-    thingHitTester;
-    currentMap;
-    canvasWidth;
-    canvasHeight;
-    highlightedThingIndex = -1;
+    isMouseDown = false;
     awaitingRender = false;
-    dashedStrokeOffset = 0;
-    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     constructor(canvas) {
         this.canvas = canvas;
-        canvas.style.position = "fixed";
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        this.canvasWidth = canvas.width;
-        this.canvasHeight = canvas.height;
-        this.thingHitTester = new HitTester(this.viewMatrix);
         this.wad = new Promise((resolve, _reject) => {
             canvas.addEventListener("dblclick", async (_event) => {
                 try {
@@ -1462,51 +1444,51 @@ class MapView2D {
                 resolve(wad);
             });
         });
-        document.addEventListener("wheel", (event) => {
-            if (this.currentMap == null)
-                return;
-            const pos = matVecMul(this.viewMatrix.inverse(), {
-                x: event.clientX * 1,
-                y: event.clientY * 1
-            });
-            this.viewMatrix.translateSelf(pos.x, pos.y);
-            this.viewMatrix.scaleSelf(event.deltaY < 0 ? 1.1 : 0.9);
-            this.viewMatrix.translateSelf(-pos.x, -pos.y);
-            this.redraw();
+        document.addEventListener("wheel", (e) => this.onWheel(e));
+        document.addEventListener("resize", (e) => this.onResize(e));
+        canvas.addEventListener("mousedown", (e) => {
+            this.isMouseDown = true;
+            this.onMouseDown(e);
         });
-        window.addEventListener("resize", (_event) => {
-            this.canvas.width = window.innerWidth;
-            this.canvas.height = window.innerHeight;
-            this.canvasWidth = this.canvas.width;
-            this.canvasHeight = this.canvas.height;
-            this.redraw();
+        canvas.addEventListener("mouseup", (e) => {
+            this.isMouseDown = false;
+            this.onMouseUp(e);
         });
-        let isMouseDown = false;
-        canvas.addEventListener("mousedown", (_event) => {
-            isMouseDown = true;
+        canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
+        canvas.addEventListener("keyup", (e) => this.onKeyUp(e));
+    }
+    redraw() {
+        if (this.awaitingRender)
+            return;
+        this.awaitingRender = true;
+        requestAnimationFrame(() => {
+            this.draw();
+            this.awaitingRender = false;
         });
-        canvas.addEventListener("mouseup", (_event) => {
-            isMouseDown = false;
-        });
-        canvas.addEventListener("mousemove", (event) => {
-            if (this.currentMap == null)
-                return;
-            const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
-            const newHighlightedIndex = hitResult?.index ?? -1;
-            if (this.highlightedThingIndex != newHighlightedIndex) {
-                console.log(hitResult?.info, hitResult?.info?.description);
-                this.highlightedThingIndex = newHighlightedIndex;
-                this.dashedStrokeOffset = 0;
-                this.redraw();
-            }
-            if (isMouseDown) {
-                const inverse = this.viewMatrix.inverse();
-                const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
-                const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
-                this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
-                this.redraw();
-            }
-        });
+    }
+}
+function matVecMul(m, v) {
+    return {
+        x: m.a * v.x + m.c * v.y + m.e,
+        y: m.b * v.x + m.d * v.y + m.f
+    };
+}
+class MapView2D extends MapView {
+    thingHitTester;
+    currentMap;
+    canvasWidth;
+    canvasHeight;
+    highlightedThingIndex = -1;
+    dashedStrokeOffset = 0;
+    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
+    constructor(canvas) {
+        super(canvas);
+        canvas.style.position = "fixed";
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        this.canvasWidth = canvas.width;
+        this.canvasHeight = canvas.height;
+        this.thingHitTester = new HitTester(this.viewMatrix);
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
                 return;
@@ -1515,60 +1497,47 @@ class MapView2D {
         }, 40);
         this.redraw();
     }
-    redraw() {
-        if (this.awaitingRender)
+    onWheel(event) {
+        if (this.currentMap == null)
             return;
-        this.awaitingRender = true;
-        requestAnimationFrame(() => {
-            this.redraw2d();
-            this.awaitingRender = false;
+        const pos = matVecMul(this.viewMatrix.inverse(), {
+            x: event.clientX * 1,
+            y: event.clientY * 1
         });
+        this.viewMatrix.translateSelf(pos.x, pos.y);
+        this.viewMatrix.scaleSelf(event.deltaY < 0 ? 1.1 : 0.9);
+        this.viewMatrix.translateSelf(-pos.x, -pos.y);
+        this.redraw();
     }
-    redraw3d() {
-        const gl = this.canvas.getContext("webgl");
-        gl.clearColor(0.0, 0.0, 0.0, 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        const positionBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-        const positions = [
-            1.0, 1.0,
-            -1.0, 1.0,
-            1.0, -1.0,
-            -1.0, -1.0,
-        ];
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
-        gl.clearColor(0.0, 0.0, 0.0, 1.0); // Clear to black, fully opaque
-        gl.clearDepth(1.0); // Clear everything
-        gl.enable(gl.DEPTH_TEST); // Enable depth testing
-        gl.depthFunc(gl.LEQUAL); // Near things obscure far things
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        const fieldOfView = 45 * Math.PI / 180; // in radians
-        const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
-        const zNear = 0.1;
-        const zFar = 100.0;
-        const projectionMatrix = mat4.create();
-        const modelViewMatrix = mat4.create();
-        mat4.translate(modelViewMatrix, // destination matrix
-        modelViewMatrix, // matrix to translate
-        [-0.0, 0.0, -6.0]); // amount to translate
-        {
-            const numComponents = 2; // pull out 2 values per iteration
-            const type = gl.FLOAT; // the data in the buffer is 32bit floats
-            const normalize = false; // don't normalize
-            const stride = 0; // how many bytes to get from one set of values to the next
-            // 0 = use type and numComponents above
-            const offset = 0; // how many bytes inside the buffer to start from
-            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-            // gl.vertexAttribPointer(
-            //     programInfo.attribLocations.vertexPosition,
-            //     numComponents,
-            //     type,
-            //     normalize,
-            //     stride,
-            //     offset);
-            // gl.enableVertexAttribArray(
-            //     programInfo.attribLocations.vertexPosition);
+    onResize(event) {
+        this.canvas.width = window.innerWidth;
+        this.canvas.height = window.innerHeight;
+        this.canvasWidth = this.canvas.width;
+        this.canvasHeight = this.canvas.height;
+        this.redraw();
+    }
+    onMouseDown(event) { }
+    onMouseUp(event) { }
+    onMouseMove(event) {
+        if (this.currentMap == null)
+            return;
+        const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
+        const newHighlightedIndex = hitResult?.index ?? -1;
+        if (this.highlightedThingIndex != newHighlightedIndex) {
+            console.log(hitResult?.info, hitResult?.info?.description);
+            this.highlightedThingIndex = newHighlightedIndex;
+            this.dashedStrokeOffset = 0;
+            this.redraw();
         }
+        if (this.isMouseDown) {
+            const inverse = this.viewMatrix.inverse();
+            const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
+            const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
+            this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
+            this.redraw();
+        }
+    }
+    onKeyUp(event) {
     }
     drawHelpText2d(context) {
         function drawCentered(text, width, height) {
@@ -1600,11 +1569,13 @@ class MapView2D {
         context.font = "20px serif";
         drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse", this.canvasWidth, this.canvasHeight);
     }
-    redraw2d() {
+    draw() {
         const context = this.canvas.getContext("2d");
         context.setTransform(undefined);
         context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
         context.setTransform(this.viewMatrix);
+        context.imageSmoothingQuality = "high";
+        context.imageSmoothingEnabled = true;
         const map = this.currentMap;
         if (map == null) {
             this.drawHelpText2d(context);
@@ -1675,6 +1646,8 @@ class MapView2D {
             const centerX = thing.x;
             const centerY = thing.y;
             const radius = thing.description.radius;
+            const point = new DOMPoint(centerX, centerY);
+            const transformedPoint = point.matrixTransform(this.viewMatrix);
             context.beginPath();
             context.strokeStyle = "red";
             context.setLineDash([6, 6]);
@@ -1682,36 +1655,38 @@ class MapView2D {
             context.arc(centerX, centerY, radius, 0, Math.PI * 2);
             context.stroke();
             context.setLineDash([]);
+            context.setTransform(undefined);
             context.beginPath();
-            const boxX = centerX - radius;
-            const boxY = centerY + radius;
+            const boxX = transformedPoint.x - radius;
+            const boxY = transformedPoint.y + radius;
             context.clearRect(boxX, boxY, 300, 100);
             context.rect(boxX, boxY, 300, 100);
             context.font = "12pt serif";
             context.fillStyle = "Black";
-            context.fillText(thing.description?.description ?? "", boxX + 10, boxY + 10, 300);
+            context.textBaseline = "top";
+            context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
             context.stroke();
         }
     }
-    async displayLevel(name) {
+    async displayLevel(index) {
         const wad = await this.wad;
-        this.currentMap = wad.maps.find((map) => map.name == name) ?? wad.maps[0];
+        this.currentMap = wad.maps[index] ?? wad.maps[0];
         const player1Start = this.currentMap.things.find((t) => t.type == 1);
         if (player1Start != undefined) {
             // TODO: Fix. Works really badly on doom1.wad
             this.viewMatrix.translateSelf(player1Start.x, player1Start.y);
         }
-        let x = Number.MAX_VALUE, y = Number.MAX_VALUE, dx = Number.MIN_VALUE, dy = Number.MIN_VALUE;
-        for (const linedef of this.currentMap.linedefs) {
-            x = Math.min(x, linedef.vertexA.x);
-            x = Math.min(x, linedef.vertexB.x);
-            y = Math.min(y, linedef.vertexA.y * 1);
-            y = Math.min(y, linedef.vertexB.y * 1);
-            dx = Math.max(dx, linedef.vertexA.x);
-            dx = Math.max(dx, linedef.vertexB.x);
-            dy = Math.max(dy, linedef.vertexA.y * 1);
-            dy = Math.max(dy, linedef.vertexB.y * 1);
-        }
+        // let x = Number.MAX_VALUE, y = Number.MAX_VALUE, dx = Number.MIN_VALUE, dy = Number.MIN_VALUE;
+        // for (const linedef of this.currentMap.linedefs) {
+        //     x = Math.min(x, linedef.vertexA.x);
+        //     x = Math.min(x, linedef.vertexB.x);
+        //     y = Math.min(y, linedef.vertexA.y * 1);
+        //     y = Math.min(y, linedef.vertexB.y * 1);
+        //     dx = Math.max(dx, linedef.vertexA.x);
+        //     dx = Math.max(dx, linedef.vertexB.x);
+        //     dy = Math.max(dy, linedef.vertexA.y * 1);
+        //     dy = Math.max(dy, linedef.vertexB.y * 1);
+        // }
         // this.baseX = x;
         // this.baseY = y;
         this.redraw();
@@ -1719,7 +1694,7 @@ class MapView2D {
 }
 const el = document.querySelector("canvas");
 const mapView = new MapView2D(el);
-mapView.displayLevel("MAP01");
+mapView.displayLevel(0);
 class BinaryFileReader {
     position = 0;
     u8;
@@ -2133,7 +2108,9 @@ class MapEntry {
                 }));
             }
         }
-        return maps;
+        // This should really be parsing out the numbers, but they should happen to order correctly regardless due
+        // to leading 0 padding.
+        return maps.sort((a, b) => a.name < b.name ? -1 : 1);
     }
 }
 class PatchEntry {
