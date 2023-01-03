@@ -435,6 +435,7 @@ interface IMapDirectoryEntry {
 class MapEntry {
     public readonly wadFile: WadFile;
     public readonly name: string;
+    public readonly displayName: string;
     public readonly entries: IMapDirectoryEntry;
     public readonly vertexes: readonly Vertex[];
     public readonly linedefs: readonly LinedefEntry[];
@@ -450,6 +451,7 @@ class MapEntry {
         this.wadFile = wadFile;
         this.reader = reader;
         this.name = name;
+        this.displayName = entries.map.name;
         this.entries = entries;
         this.vertexes = Vertex.readAll(entries.vertexes, reader);
         this.linedefs = LinedefEntry.readAll(this, entries.linedefs, reader);

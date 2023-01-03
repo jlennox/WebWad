@@ -1419,6 +1419,7 @@ class MapView {
     canvas;
     wad;
     isMouseDown = false;
+    currentMap;
     awaitingRender = false;
     constructor(canvas) {
         this.canvas = canvas;
@@ -1445,7 +1446,7 @@ class MapView {
             });
         });
         document.addEventListener("wheel", (e) => this.onWheel(e));
-        document.addEventListener("resize", (e) => this.onResize(e));
+        window.addEventListener("resize", (e) => this.onResize(e));
         canvas.addEventListener("mousedown", (e) => {
             this.isMouseDown = true;
             this.onMouseDown(e);
@@ -1455,7 +1456,7 @@ class MapView {
             this.onMouseUp(e);
         });
         canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        canvas.addEventListener("keyup", (e) => this.onKeyUp(e));
+        document.addEventListener("keyup", (e) => this.onKeyUp(e));
     }
     redraw() {
         if (this.awaitingRender)
@@ -1475,11 +1476,11 @@ function matVecMul(m, v) {
 }
 class MapView2D extends MapView {
     thingHitTester;
-    currentMap;
     canvasWidth;
     canvasHeight;
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
+    levelIndex = 0;
     viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     constructor(canvas) {
         super(canvas);
@@ -1538,6 +1539,16 @@ class MapView2D extends MapView {
         }
     }
     onKeyUp(event) {
+        switch (event.key) {
+            case "-":
+                this.levelIndex = Math.max(this.levelIndex - 1, 0);
+                this.displayLevel(this.levelIndex);
+                break;
+            case "+":
+                this.levelIndex = this.levelIndex + 1;
+                this.displayLevel(this.levelIndex);
+                break;
+        }
     }
     drawHelpText2d(context) {
         function drawCentered(text, width, height) {
@@ -1567,7 +1578,7 @@ class MapView2D extends MapView {
         context.font = "20px serif";
         drawCentered("Or double click to load the shareware WAD", this.canvasWidth, this.canvasHeight + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse", this.canvasWidth, this.canvasHeight);
+        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvasWidth, this.canvasHeight);
     }
     draw() {
         const context = this.canvas.getContext("2d");
@@ -1593,7 +1604,7 @@ class MapView2D extends MapView {
         for (const linedef of map.linedefs) {
             context.beginPath();
             if (linedef.hasFlag(LinedefFlags.SECRET)) {
-                context.strokeStyle = "red";
+                context.strokeStyle = "purple";
             }
             else if (linedef.hasFlag(LinedefFlags.DONTDRAW)) {
                 context.strokeStyle = "grey";
@@ -1667,8 +1678,14 @@ class MapView2D extends MapView {
             context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
             context.stroke();
         }
+        context.setTransform(undefined);
+        context.font = "12pt serif";
+        context.fillStyle = "Black";
+        context.textBaseline = "top";
+        context.fillText(this.currentMap?.displayName ?? "Unknown", 0, 0, 300);
     }
     async displayLevel(index) {
+        this.levelIndex = index;
         const wad = await this.wad;
         this.currentMap = wad.maps[index] ?? wad.maps[0];
         const player1Start = this.currentMap.things.find((t) => t.type == 1);
@@ -1691,6 +1708,26 @@ class MapView2D extends MapView {
         // this.baseY = y;
         this.redraw();
     }
+}
+class MapView3D extends MapView {
+    constructor(canvas) {
+        super(canvas);
+        canvas.style.position = "fixed";
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        this.redraw();
+    }
+    async displayLevel(index) {
+        const wad = await this.wad;
+        this.currentMap = wad.maps[index] ?? wad.maps[0];
+    }
+    draw() { }
+    onWheel(event) { }
+    onResize(event) { }
+    onMouseDown(event) { }
+    onMouseUp(event) { }
+    onMouseMove(event) { }
+    onKeyUp(event) { }
 }
 const el = document.querySelector("canvas");
 const mapView = new MapView2D(el);
@@ -2054,6 +2091,7 @@ var MapEntryName;
 class MapEntry {
     wadFile;
     name;
+    displayName;
     entries;
     vertexes;
     linedefs;
@@ -2067,6 +2105,7 @@ class MapEntry {
         this.wadFile = wadFile;
         this.reader = reader;
         this.name = name;
+        this.displayName = entries.map.name;
         this.entries = entries;
         this.vertexes = Vertex.readAll(entries.vertexes, reader);
         this.linedefs = LinedefEntry.readAll(this, entries.linedefs, reader);

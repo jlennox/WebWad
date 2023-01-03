@@ -26,6 +26,7 @@ class UserFileInput {
 abstract class MapView {
     protected readonly wad: Promise<WadFile>;
     protected isMouseDown: boolean = false;
+    protected currentMap: MapEntry | undefined;
 
     private awaitingRender: boolean = false;
 
@@ -56,7 +57,7 @@ abstract class MapView {
         });
 
         document.addEventListener("wheel", (e) => this.onWheel(e));
-        document.addEventListener("resize", (e) => this.onResize(e));
+        window.addEventListener("resize", (e) => this.onResize(e));
         canvas.addEventListener("mousedown", (e) => {
             this.isMouseDown = true;
             this.onMouseDown(e);
@@ -66,7 +67,7 @@ abstract class MapView {
             this.onMouseUp(e);
         });
         canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        canvas.addEventListener("keyup", (e) => this.onKeyUp(e));
+        document.addEventListener("keyup", (e) => this.onKeyUp(e));
     }
 
     protected redraw(): void {
@@ -100,11 +101,11 @@ function matVecMul(m: any, v: any) {
 class MapView2D extends MapView {
     private readonly thingHitTester;
 
-    private currentMap: MapEntry | undefined;
     private canvasWidth: number;
     private canvasHeight: number;
     private highlightedThingIndex: number = -1;
     private dashedStrokeOffset: number = 0;
+    private levelIndex: number = 0;
     private readonly viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
 
     constructor(canvas: HTMLCanvasElement) {
@@ -174,6 +175,16 @@ class MapView2D extends MapView {
     }
 
     protected override onKeyUp(event: KeyboardEvent): void {
+        switch (event.key) {
+            case "-":
+                this.levelIndex = Math.max(this.levelIndex - 1, 0);
+                this.displayLevel(this.levelIndex);
+                break;
+            case "+":
+                this.levelIndex = this.levelIndex + 1;
+                this.displayLevel(this.levelIndex);
+                break;
+        }
     }
 
     private drawHelpText2d(context: CanvasRenderingContext2D): void {
@@ -207,7 +218,7 @@ class MapView2D extends MapView {
         context.font = "20px serif";
         drawCentered("Or double click to load the shareware WAD", this.canvasWidth, this.canvasHeight + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse", this.canvasWidth, this.canvasHeight);
+        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvasWidth, this.canvasHeight);
     }
 
     protected override draw(): void {
@@ -238,7 +249,7 @@ class MapView2D extends MapView {
         for (const linedef of map.linedefs) {
             context.beginPath();
             if (linedef.hasFlag(LinedefFlags.SECRET)) {
-                context.strokeStyle = "red";
+                context.strokeStyle = "purple";
             } else if (linedef.hasFlag(LinedefFlags.DONTDRAW)) {
                 context.strokeStyle = "grey";
             } else {
@@ -292,7 +303,6 @@ class MapView2D extends MapView {
 
         // Draw last to allow the box to have highest Z order.
         if (selectedThingEntry != null) {
-
             const thing = selectedThingEntry;
 
             const centerX = thing.x;
@@ -323,9 +333,16 @@ class MapView2D extends MapView {
             context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
             context.stroke();
         }
+
+        context.setTransform(undefined);
+        context.font = "12pt serif";
+        context.fillStyle = "Black";
+        context.textBaseline = "top";
+        context.fillText(this.currentMap?.displayName ?? "Unknown", 0, 0, 300);
     }
 
     public override async displayLevel(index: number): Promise<void> {
+        this.levelIndex = index;
         const wad = await this.wad;
         this.currentMap = wad.maps[index] ?? wad.maps[0];
         const player1Start = this.currentMap.things.find((t) => t.type == 1);
@@ -349,6 +366,30 @@ class MapView2D extends MapView {
         // this.baseY = y;
         this.redraw();
     }
+}
+
+class MapView3D extends MapView {
+    constructor(canvas: HTMLCanvasElement) {
+        super(canvas);
+        canvas.style.position = "fixed";
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        this.redraw();
+    }
+
+    public async displayLevel(index: number): Promise<void> {
+        const wad = await this.wad;
+        this.currentMap = wad.maps[index] ?? wad.maps[0];
+    }
+
+    protected draw(): void {}
+    protected onWheel(event: WheelEvent): void {}
+    protected onResize(event: UIEvent): void {}
+    protected onMouseDown(event: MouseEvent): void {}
+    protected onMouseUp(event: MouseEvent): void {}
+    protected onMouseMove(event: MouseEvent): void {}
+    protected onKeyUp(event: KeyboardEvent): void {}
 }
 
 const el = document.querySelector<HTMLCanvasElement>("canvas")!;
