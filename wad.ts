@@ -230,7 +230,7 @@ class ThingEntry {
     public readonly x: i16;
     public readonly y: i16;
     public readonly angle: u16;
-    public readonly type: u16;
+    public readonly type: u16 | ThingsType;
     public readonly spawnFlags: u16;
     public readonly description?: ThingDescription;
 
@@ -252,7 +252,7 @@ class ThingEntry {
     }
 }
 
-enum LinedefFlags {
+const enum LinedefFlags {
     BLOCKING = 0x0001, // blocks players and monsters 	Doom 	blocking 	BLOCKF_CREATURES
     BLOCKMONSTERS = 0x0002, // blocks monsters 	Doom 	blockmonsters 	BLOCKF_MONSTERS
     TWOSIDED = 0x0004, // two sided 	Doom 	twosided
@@ -405,7 +405,7 @@ class SubSectorEntry {
     }
 }
 
-enum MapEntryName {
+const enum MapEntryName {
     THINGS = "THINGS",
     LINEDEFS = "LINEDEFS",
     SIDEDEFS = "SIDEDEFS",

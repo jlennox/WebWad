@@ -1,3 +1,10 @@
+const enum PointIndex {
+    x = 0,
+    y = 1,
+    radius = 2,
+    NumberOfEntries = 3
+}
+
 class HitTester<TInfo> {
     // Storing in Int16Array to (hopefully...) improve memory locality and speed.
     private points: Int16Array | null = null;
@@ -10,7 +17,7 @@ class HitTester<TInfo> {
 
     public startUpdate(count: number): void {
         if (this.count < count) {
-            this.points = new Int16Array(count * 3);
+            this.points = new Int16Array(count * PointIndex.NumberOfEntries);
             this.infos = new Array(count);
         }
 
@@ -23,9 +30,9 @@ class HitTester<TInfo> {
 
         const pointsIndex = this.index * 3;
 
-        this.points[pointsIndex] = x;
-        this.points[pointsIndex + 1] = y;
-        this.points[pointsIndex + 2] = radius;
+        this.points[pointsIndex + PointIndex.x] = x;
+        this.points[pointsIndex + PointIndex.y] = y;
+        this.points[pointsIndex + PointIndex.radius] = radius;
         this.infos[this.index] = info;
 
         ++this.index;
@@ -42,9 +49,10 @@ class HitTester<TInfo> {
 
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {
-            const pointX = points[pointIndex++];
-            const pointY = points[pointIndex++];
-            const pointRadius = points[pointIndex++];
+            const pointX = points[pointIndex + PointIndex.x];
+            const pointY = points[pointIndex + PointIndex.y];
+            const pointRadius = points[pointIndex + PointIndex.radius];
+            pointIndex += PointIndex.NumberOfEntries;
 
             const dx = Math.abs(pointX - translated.x);
             if (dx > pointRadius) continue;

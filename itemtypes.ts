@@ -32,7 +32,12 @@ interface ThingDescription {
 //
 // console.log(results);
 
-enum ThingSprite {
+const enum ThingsType {
+  PlayerOneStart = 1,
+  HealthBonus = 2014,
+}
+
+const enum ThingSprite {
     PLAY = "PLAY",
     BKEY = "BKEY",
     YKEY = "YKEY",

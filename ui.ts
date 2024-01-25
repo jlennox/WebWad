@@ -135,8 +135,10 @@ class MapView2D extends MapView {
             y: event.clientY * 1
         });
 
+        const speed = event.shiftKey ? 0.15 : 0.08;
+        const scale = 1 + (event.deltaY < 0 ? speed : -speed);
         this.viewMatrix.translateSelf(pos.x, pos.y);
-        this.viewMatrix.scaleSelf(event.deltaY < 0 ? 1.1 : 0.9);
+        this.viewMatrix.scaleSelf(scale);
         this.viewMatrix.translateSelf(-pos.x, -pos.y);
         this.redraw();
     }
@@ -240,7 +242,7 @@ class MapView2D extends MapView {
         if (true) {
             context.beginPath();
             context.fillStyle = "red";
-            context.arc(0, 0, 30, 0, Math.PI * 2);
+            context.arc(0, 0, 20, 0, Math.PI * 2);
             context.fill();
         }
 
@@ -263,7 +265,6 @@ class MapView2D extends MapView {
 
         // Not all entries are used as index values, so we must grab this while enumerating.
         let selectedThingEntry: ThingEntry | null = null;
-
         let thingIndex = 0;
         this.thingHitTester.startUpdate(map.things.length);
         for (const thing of map.things) {
@@ -285,7 +286,7 @@ class MapView2D extends MapView {
                 continue;
             }
 
-            if (thing.description.sprite == ThingSprite.BON1) {
+            if (thing.type == ThingsType.HealthBonus) {
                 context.beginPath();
                 context.fillStyle = "blue";
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
@@ -345,25 +346,47 @@ class MapView2D extends MapView {
         this.levelIndex = index;
         const wad = await this.wad;
         this.currentMap = wad.maps[index] ?? wad.maps[0];
-        const player1Start = this.currentMap.things.find((t) => t.type == 1);
+        const player1Start = this.currentMap.things.find((t) => t.type == ThingsType.PlayerOneStart);
+        this.currentMap.linedefs
         if (player1Start != undefined) {
-            // TODO: Fix. Works really badly on doom1.wad
-            this.viewMatrix.translateSelf(player1Start.x, player1Start.y);
+            // Eh. Centering on the player start isn't the best, but might be improvable.
+            // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
+            // this.redraw();
         }
 
-        // let x = Number.MAX_VALUE, y = Number.MAX_VALUE, dx = Number.MIN_VALUE, dy = Number.MIN_VALUE;
-        // for (const linedef of this.currentMap.linedefs) {
-        //     x = Math.min(x, linedef.vertexA.x);
-        //     x = Math.min(x, linedef.vertexB.x);
-        //     y = Math.min(y, linedef.vertexA.y * 1);
-        //     y = Math.min(y, linedef.vertexB.y * 1);
-        //     dx = Math.max(dx, linedef.vertexA.x);
-        //     dx = Math.max(dx, linedef.vertexB.x);
-        //     dy = Math.max(dy, linedef.vertexA.y * 1);
-        //     dy = Math.max(dy, linedef.vertexB.y * 1);
-        // }
-        // this.baseX = x;
-        // this.baseY = y;
+        this.fitLevelToView(this.currentMap);
+    }
+
+    private fitLevelToView(map: MapEntry): void {
+        let x = Number.MAX_VALUE;
+        let y = Number.MAX_VALUE;
+        let dx = Number.MIN_VALUE;
+        let dy = Number.MIN_VALUE;
+        for (const linedef of map.linedefs) {
+            x = Math.min(x, linedef.vertexA.x);
+            x = Math.min(x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y * 1);
+            y = Math.min(y, linedef.vertexB.y * 1);
+            dx = Math.max(dx, linedef.vertexA.x);
+            dx = Math.max(dx, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y * 1);
+            dy = Math.max(dy, linedef.vertexB.y * 1);
+        }
+
+        const canvasWidth = this.canvasWidth;
+        const canvasHeight = this.canvasHeight;
+        const scaleX = canvasWidth / (dx - x);
+        const scaleY = canvasHeight / (dy - y);
+        const scale = Math.min(scaleX, scaleY);
+
+        let translateX = (canvasWidth - (dx - x) * scale) / 2 - x * scale;
+        let translateY = (canvasHeight - (dy - y) * scale) / 2 - y * scale;
+
+        this.viewMatrix.a = scale;
+        this.viewMatrix.d = scale;
+        this.viewMatrix.e = translateX;
+        this.viewMatrix.f = translateY;
+
         this.redraw();
     }
 }

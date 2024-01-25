@@ -11,7 +11,7 @@ class HitTester {
     }
     startUpdate(count) {
         if (this.count < count) {
-            this.points = new Int16Array(count * 3);
+            this.points = new Int16Array(count * 3 /* PointIndex.NumberOfEntries */);
             this.infos = new Array(count);
         }
         this.index = 0;
@@ -21,9 +21,9 @@ class HitTester {
         if (this.points == null)
             throw new Error("Object not initialized.");
         const pointsIndex = this.index * 3;
-        this.points[pointsIndex] = x;
-        this.points[pointsIndex + 1] = y;
-        this.points[pointsIndex + 2] = radius;
+        this.points[pointsIndex + 0 /* PointIndex.x */] = x;
+        this.points[pointsIndex + 1 /* PointIndex.y */] = y;
+        this.points[pointsIndex + 2 /* PointIndex.radius */] = radius;
         this.infos[this.index] = info;
         ++this.index;
     }
@@ -34,9 +34,10 @@ class HitTester {
         const translated = new DOMPoint(x, y).matrixTransform(this.matrix.inverse());
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {
-            const pointX = points[pointIndex++];
-            const pointY = points[pointIndex++];
-            const pointRadius = points[pointIndex++];
+            const pointX = points[pointIndex + 0 /* PointIndex.x */];
+            const pointY = points[pointIndex + 1 /* PointIndex.y */];
+            const pointRadius = points[pointIndex + 2 /* PointIndex.radius */];
+            pointIndex += 3 /* PointIndex.NumberOfEntries */;
             const dx = Math.abs(pointX - translated.x);
             if (dx > pointRadius)
                 continue;
@@ -50,145 +51,13 @@ class HitTester {
         return null;
     }
 }
-// https://doomwiki.org/wiki/Thing_types
-// results = {};
-//
-// Array.from(document.querySelectorAll("table.wikitable")).forEach(t => {
-//   const rows = t.querySelectorAll("tr");
-//   for (const row of rows) {
-//     const cells = row.querySelectorAll("td");
-// 	 try {
-// 		const id = parseInt(cells[0].innerText);
-// 		results[id] = {
-// 			version: cells[2].innerText,
-// 			radius: parseInt(cells[3].innerText),
-// 			height: parseInt(cells[4].innerText),
-// 			sprite: cells[5].innerText,
-// 			sequence: cells[6].innerText,
-// 			class: cells[7].innerText,
-// 			description: cells[8].innerText
-// 		};
-//   } catch {}
-//   }
-// })
-//
-// console.log(results);
-var ThingSprite;
-(function (ThingSprite) {
-    ThingSprite["PLAY"] = "PLAY";
-    ThingSprite["BKEY"] = "BKEY";
-    ThingSprite["YKEY"] = "YKEY";
-    ThingSprite["SPID"] = "SPID";
-    ThingSprite["BPAK"] = "BPAK";
-    ThingSprite["SPOS"] = "SPOS";
-    ThingSprite["none"] = "none";
-    ThingSprite["RKEY"] = "RKEY";
-    ThingSprite["none4"] = "none4";
-    ThingSprite["CYBR"] = "CYBR";
-    ThingSprite["CELP"] = "CELP";
-    ThingSprite["POSS"] = "POSS";
-    ThingSprite["TROO"] = "TROO";
-    ThingSprite["SARG"] = "SARG";
-    ThingSprite["HEAD"] = "HEAD";
-    ThingSprite["SKUL"] = "SKUL";
-    ThingSprite["POL5"] = "POL5";
-    ThingSprite["POL1"] = "POL1";
-    ThingSprite["POL6"] = "POL6";
-    ThingSprite["POL4"] = "POL4";
-    ThingSprite["POL2"] = "POL2";
-    ThingSprite["POL3"] = "POL3";
-    ThingSprite["COL1"] = "COL1";
-    ThingSprite["COL2"] = "COL2";
-    ThingSprite["COL3"] = "COL3";
-    ThingSprite["COL4"] = "COL4";
-    ThingSprite["CAND"] = "CAND";
-    ThingSprite["CBRA"] = "CBRA";
-    ThingSprite["COL5"] = "COL5";
-    ThingSprite["COL6"] = "COL6";
-    ThingSprite["RSKU"] = "RSKU";
-    ThingSprite["YSKU"] = "YSKU";
-    ThingSprite["BSKU"] = "BSKU";
-    ThingSprite["CEYE"] = "CEYE";
-    ThingSprite["FSKU"] = "FSKU";
-    ThingSprite["TRE1"] = "TRE1";
-    ThingSprite["TBLU"] = "TBLU";
-    ThingSprite["TGRN"] = "TGRN";
-    ThingSprite["TRED"] = "TRED";
-    ThingSprite["SMIT"] = "SMIT";
-    ThingSprite["ELEC"] = "ELEC";
-    ThingSprite["GOR1"] = "GOR1";
-    ThingSprite["GOR2"] = "GOR2";
-    ThingSprite["GOR3"] = "GOR3";
-    ThingSprite["GOR4"] = "GOR4";
-    ThingSprite["GOR5"] = "GOR5";
-    ThingSprite["TRE2"] = "TRE2";
-    ThingSprite["SMBT"] = "SMBT";
-    ThingSprite["SMGT"] = "SMGT";
-    ThingSprite["SMRT"] = "SMRT";
-    ThingSprite["VILE"] = "VILE";
-    ThingSprite["CPOS"] = "CPOS";
-    ThingSprite["SKEL"] = "SKEL";
-    ThingSprite["FATT"] = "FATT";
-    ThingSprite["BSPI"] = "BSPI";
-    ThingSprite["BOS2"] = "BOS2";
-    ThingSprite["FCAN"] = "FCAN";
-    ThingSprite["PAIN"] = "PAIN";
-    ThingSprite["KEEN"] = "KEEN";
-    ThingSprite["HDB1"] = "HDB1";
-    ThingSprite["HDB2"] = "HDB2";
-    ThingSprite["HDB3"] = "HDB3";
-    ThingSprite["HDB4"] = "HDB4";
-    ThingSprite["HDB5"] = "HDB5";
-    ThingSprite["HDB6"] = "HDB6";
-    ThingSprite["POB1"] = "POB1";
-    ThingSprite["POB2"] = "POB2";
-    ThingSprite["BRS1"] = "BRS1";
-    ThingSprite["SGN2"] = "SGN2";
-    ThingSprite["MEGA"] = "MEGA";
-    ThingSprite["SSWV"] = "SSWV";
-    ThingSprite["TLMP"] = "TLMP";
-    ThingSprite["TLP2"] = "TLP2";
-    ThingSprite["none3"] = "none3";
-    ThingSprite["BBRN"] = "BBRN";
-    ThingSprite["none1"] = "none1";
-    ThingSprite["SHOT"] = "SHOT";
-    ThingSprite["MGUN"] = "MGUN";
-    ThingSprite["LAUN"] = "LAUN";
-    ThingSprite["PLAS"] = "PLAS";
-    ThingSprite["CSAW"] = "CSAW";
-    ThingSprite["BFUG"] = "BFUG";
-    ThingSprite["CLIP"] = "CLIP";
-    ThingSprite["SHEL"] = "SHEL";
-    ThingSprite["ROCK"] = "ROCK";
-    ThingSprite["STIM"] = "STIM";
-    ThingSprite["MEDI"] = "MEDI";
-    ThingSprite["SOUL"] = "SOUL";
-    ThingSprite["BON1"] = "BON1";
-    ThingSprite["BON2"] = "BON2";
-    ThingSprite["ARM1"] = "ARM1";
-    ThingSprite["ARM2"] = "ARM2";
-    ThingSprite["PINV"] = "PINV";
-    ThingSprite["PSTR"] = "PSTR";
-    ThingSprite["PINS"] = "PINS";
-    ThingSprite["SUIT"] = "SUIT";
-    ThingSprite["PMAP"] = "PMAP";
-    ThingSprite["COLU"] = "COLU";
-    ThingSprite["BAR1"] = "BAR1";
-    ThingSprite["PVIS"] = "PVIS";
-    ThingSprite["BROK"] = "BROK";
-    ThingSprite["CELL"] = "CELL";
-    ThingSprite["AMMO"] = "AMMO";
-    ThingSprite["SBOX"] = "SBOX";
-    ThingSprite["BOSS"] = "BOSS";
-    ThingSprite["UNKNOWN"] = "UKNOWN";
-})(ThingSprite || (ThingSprite = {}));
 class Things {
     static descriptions = {
         1: {
             "version": "S",
             "radius": 16,
             "height": 56,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
             "class": "",
             "description": "Player 1 start"
@@ -197,7 +66,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 56,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
             "class": "",
             "description": "Player 2 start"
@@ -206,7 +75,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 56,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
             "class": "",
             "description": "Player 3 start"
@@ -215,7 +84,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 56,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
             "class": "",
             "description": "Player 4 start"
@@ -224,7 +93,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BKEY,
+            "sprite": "BKEY" /* ThingSprite.BKEY */,
             "sequence": "AB",
             "class": "P",
             "description": "Blue keycard"
@@ -233,7 +102,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.YKEY,
+            "sprite": "YKEY" /* ThingSprite.YKEY */,
             "sequence": "AB",
             "class": "P",
             "description": "Yellow keycard"
@@ -242,7 +111,7 @@ class Things {
             "version": "R",
             "radius": 128,
             "height": 100,
-            "sprite": ThingSprite.SPID,
+            "sprite": "SPID" /* ThingSprite.SPID */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Spiderdemon"
@@ -251,7 +120,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BPAK,
+            "sprite": "BPAK" /* ThingSprite.BPAK */,
             "sequence": "A",
             "class": "P",
             "description": "Backpack"
@@ -260,7 +129,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.SPOS,
+            "sprite": "SPOS" /* ThingSprite.SPOS */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Shotgun guy"
@@ -269,7 +138,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "W",
             "class": "",
             "description": "Bloody mess"
@@ -278,7 +147,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 56,
-            "sprite": ThingSprite.none,
+            "sprite": "none" /* ThingSprite.none */,
             "sequence": "-",
             "class": "",
             "description": "Deathmatch start"
@@ -287,7 +156,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "W",
             "class": "",
             "description": "Bloody mess 2"
@@ -296,7 +165,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.RKEY,
+            "sprite": "RKEY" /* ThingSprite.RKEY */,
             "sequence": "AB",
             "class": "P",
             "description": "Red keycard"
@@ -305,7 +174,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.none4,
+            "sprite": "none4" /* ThingSprite.none4 */,
             "sequence": "-",
             "class": "",
             "description": "Teleport landing"
@@ -314,7 +183,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PLAY,
+            "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "N",
             "class": "",
             "description": "Dead player"
@@ -323,7 +192,7 @@ class Things {
             "version": "R",
             "radius": 40,
             "height": 110,
-            "sprite": ThingSprite.CYBR,
+            "sprite": "CYBR" /* ThingSprite.CYBR */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Cyberdemon"
@@ -332,7 +201,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.CELP,
+            "sprite": "CELP" /* ThingSprite.CELP */,
             "sequence": "A",
             "class": "P1",
             "description": "Energy cell pack"
@@ -341,7 +210,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.POSS,
+            "sprite": "POSS" /* ThingSprite.POSS */,
             "sequence": "L",
             "class": "",
             "description": "Dead former human"
@@ -350,7 +219,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SPOS,
+            "sprite": "SPOS" /* ThingSprite.SPOS */,
             "sequence": "L",
             "class": "",
             "description": "Dead former sergeant"
@@ -359,7 +228,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.TROO,
+            "sprite": "TROO" /* ThingSprite.TROO */,
             "sequence": "M",
             "class": "",
             "description": "Dead imp"
@@ -368,7 +237,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SARG,
+            "sprite": "SARG" /* ThingSprite.SARG */,
             "sequence": "N",
             "class": "",
             "description": "Dead demon"
@@ -377,7 +246,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.HEAD,
+            "sprite": "HEAD" /* ThingSprite.HEAD */,
             "sequence": "L",
             "class": "",
             "description": "Dead cacodemon"
@@ -386,7 +255,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SKUL,
+            "sprite": "SKUL" /* ThingSprite.SKUL */,
             "sequence": "K",
             "class": "",
             "description": "Dead lost soul (invisible)"
@@ -395,7 +264,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.POL5,
+            "sprite": "POL5" /* ThingSprite.POL5 */,
             "sequence": "A",
             "class": "",
             "description": "Pool of blood and flesh"
@@ -404,7 +273,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.POL1,
+            "sprite": "POL1" /* ThingSprite.POL1 */,
             "sequence": "A",
             "class": "O",
             "description": "Impaled human"
@@ -413,7 +282,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.POL6,
+            "sprite": "POL6" /* ThingSprite.POL6 */,
             "sequence": "AB",
             "class": "O",
             "description": "Twitching impaled human"
@@ -422,7 +291,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.POL4,
+            "sprite": "POL4" /* ThingSprite.POL4 */,
             "sequence": "A",
             "class": "O",
             "description": "Skull on a pole"
@@ -431,7 +300,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.POL2,
+            "sprite": "POL2" /* ThingSprite.POL2 */,
             "sequence": "A",
             "class": "O",
             "description": "Five skulls \"shish kebab\""
@@ -440,7 +309,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.POL3,
+            "sprite": "POL3" /* ThingSprite.POL3 */,
             "sequence": "AB",
             "class": "O",
             "description": "Pile of skulls and candles"
@@ -449,7 +318,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COL1,
+            "sprite": "COL1" /* ThingSprite.COL1 */,
             "sequence": "A",
             "class": "O",
             "description": "Tall green pillar"
@@ -458,7 +327,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COL2,
+            "sprite": "COL2" /* ThingSprite.COL2 */,
             "sequence": "A",
             "class": "O",
             "description": "Short green pillar"
@@ -467,7 +336,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COL3,
+            "sprite": "COL3" /* ThingSprite.COL3 */,
             "sequence": "A",
             "class": "O",
             "description": "Tall red pillar"
@@ -476,7 +345,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COL4,
+            "sprite": "COL4" /* ThingSprite.COL4 */,
             "sequence": "A",
             "class": "O",
             "description": "Short red pillar"
@@ -485,7 +354,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.CAND,
+            "sprite": "CAND" /* ThingSprite.CAND */,
             "sequence": "A",
             "class": "",
             "description": "Candle"
@@ -494,7 +363,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.CBRA,
+            "sprite": "CBRA" /* ThingSprite.CBRA */,
             "sequence": "A",
             "class": "O",
             "description": "Candelabra"
@@ -503,7 +372,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COL5,
+            "sprite": "COL5" /* ThingSprite.COL5 */,
             "sequence": "AB",
             "class": "O",
             "description": "Short green pillar with beating heart"
@@ -512,7 +381,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COL6,
+            "sprite": "COL6" /* ThingSprite.COL6 */,
             "sequence": "A",
             "class": "O",
             "description": "Short red pillar with skull"
@@ -521,7 +390,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.RSKU,
+            "sprite": "RSKU" /* ThingSprite.RSKU */,
             "sequence": "AB",
             "class": "P",
             "description": "Red skull key"
@@ -530,7 +399,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.YSKU,
+            "sprite": "YSKU" /* ThingSprite.YSKU */,
             "sequence": "AB",
             "class": "P",
             "description": "Yellow skull key"
@@ -539,7 +408,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BSKU,
+            "sprite": "BSKU" /* ThingSprite.BSKU */,
             "sequence": "AB",
             "class": "P",
             "description": "Blue skull key"
@@ -548,7 +417,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.CEYE,
+            "sprite": "CEYE" /* ThingSprite.CEYE */,
             "sequence": "ABCB",
             "class": "O",
             "description": "Evil eye"
@@ -557,7 +426,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.FSKU,
+            "sprite": "FSKU" /* ThingSprite.FSKU */,
             "sequence": "ABC",
             "class": "O",
             "description": "Floating skull"
@@ -566,7 +435,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.TRE1,
+            "sprite": "TRE1" /* ThingSprite.TRE1 */,
             "sequence": "A",
             "class": "O",
             "description": "Burnt tree"
@@ -575,7 +444,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.TBLU,
+            "sprite": "TBLU" /* ThingSprite.TBLU */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Tall blue firestick"
@@ -584,7 +453,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.TGRN,
+            "sprite": "TGRN" /* ThingSprite.TGRN */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Tall green firestick"
@@ -593,7 +462,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.TRED,
+            "sprite": "TRED" /* ThingSprite.TRED */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Tall red firestick"
@@ -602,7 +471,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.SMIT,
+            "sprite": "SMIT" /* ThingSprite.SMIT */,
             "sequence": "A",
             "class": "O",
             "description": "Brown stump"
@@ -611,7 +480,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.ELEC,
+            "sprite": "ELEC" /* ThingSprite.ELEC */,
             "sequence": "A",
             "class": "O",
             "description": "Tall techno column"
@@ -620,7 +489,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 68,
-            "sprite": ThingSprite.GOR1,
+            "sprite": "GOR1" /* ThingSprite.GOR1 */,
             "sequence": "ABCB",
             "class": "O^",
             "description": "Hanging victim, twitching"
@@ -629,7 +498,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 84,
-            "sprite": ThingSprite.GOR2,
+            "sprite": "GOR2" /* ThingSprite.GOR2 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging victim, arms out"
@@ -638,7 +507,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 84,
-            "sprite": ThingSprite.GOR3,
+            "sprite": "GOR3" /* ThingSprite.GOR3 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging victim, one-legged"
@@ -647,7 +516,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 68,
-            "sprite": ThingSprite.GOR4,
+            "sprite": "GOR4" /* ThingSprite.GOR4 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging pair of legs"
@@ -656,7 +525,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 52,
-            "sprite": ThingSprite.GOR5,
+            "sprite": "GOR5" /* ThingSprite.GOR5 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging leg"
@@ -665,7 +534,7 @@ class Things {
             "version": "R",
             "radius": 32,
             "height": 16,
-            "sprite": ThingSprite.TRE2,
+            "sprite": "TRE2" /* ThingSprite.TRE2 */,
             "sequence": "A",
             "class": "O",
             "description": "Large brown tree"
@@ -674,7 +543,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.SMBT,
+            "sprite": "SMBT" /* ThingSprite.SMBT */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Short blue firestick"
@@ -683,7 +552,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.SMGT,
+            "sprite": "SMGT" /* ThingSprite.SMGT */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Short green firestick"
@@ -692,7 +561,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.SMRT,
+            "sprite": "SMRT" /* ThingSprite.SMRT */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Short red firestick"
@@ -701,7 +570,7 @@ class Things {
             "version": "S",
             "radius": 30,
             "height": 56,
-            "sprite": ThingSprite.SARG,
+            "sprite": "SARG" /* ThingSprite.SARG */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Spectre"
@@ -710,7 +579,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 84,
-            "sprite": ThingSprite.GOR2,
+            "sprite": "GOR2" /* ThingSprite.GOR2 */,
             "sequence": "A",
             "class": "^",
             "description": "Hanging victim, arms out"
@@ -719,7 +588,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 68,
-            "sprite": ThingSprite.GOR4,
+            "sprite": "GOR4" /* ThingSprite.GOR4 */,
             "sequence": "A",
             "class": "^",
             "description": "Hanging pair of legs"
@@ -728,7 +597,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 52,
-            "sprite": ThingSprite.GOR3,
+            "sprite": "GOR3" /* ThingSprite.GOR3 */,
             "sequence": "A",
             "class": "^",
             "description": "Hanging victim, one-legged"
@@ -737,7 +606,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 52,
-            "sprite": ThingSprite.GOR5,
+            "sprite": "GOR5" /* ThingSprite.GOR5 */,
             "sequence": "A",
             "class": "^",
             "description": "Hanging leg"
@@ -746,7 +615,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 68,
-            "sprite": ThingSprite.GOR1,
+            "sprite": "GOR1" /* ThingSprite.GOR1 */,
             "sequence": "ABCB",
             "class": "^",
             "description": "Hanging victim, twitching"
@@ -755,7 +624,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.VILE,
+            "sprite": "VILE" /* ThingSprite.VILE */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Arch-vile"
@@ -764,7 +633,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.CPOS,
+            "sprite": "CPOS" /* ThingSprite.CPOS */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Heavy weapon dude"
@@ -773,7 +642,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.SKEL,
+            "sprite": "SKEL" /* ThingSprite.SKEL */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Revenant"
@@ -782,7 +651,7 @@ class Things {
             "version": "2",
             "radius": 48,
             "height": 64,
-            "sprite": ThingSprite.FATT,
+            "sprite": "FATT" /* ThingSprite.FATT */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Mancubus"
@@ -791,7 +660,7 @@ class Things {
             "version": "2",
             "radius": 64,
             "height": 64,
-            "sprite": ThingSprite.BSPI,
+            "sprite": "BSPI" /* ThingSprite.BSPI */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Arachnotron"
@@ -800,7 +669,7 @@ class Things {
             "version": "2",
             "radius": 24,
             "height": 64,
-            "sprite": ThingSprite.BOS2,
+            "sprite": "BOS2" /* ThingSprite.BOS2 */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Hell knight"
@@ -809,7 +678,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.FCAN,
+            "sprite": "FCAN" /* ThingSprite.FCAN */,
             "sequence": "ABC",
             "class": "O",
             "description": "Burning barrel"
@@ -818,7 +687,7 @@ class Things {
             "version": "2",
             "radius": 31,
             "height": 56,
-            "sprite": ThingSprite.PAIN,
+            "sprite": "PAIN" /* ThingSprite.PAIN */,
             "sequence": "A+",
             "class": "MO*^",
             "description": "Pain elemental"
@@ -827,7 +696,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 72,
-            "sprite": ThingSprite.KEEN,
+            "sprite": "KEEN" /* ThingSprite.KEEN */,
             "sequence": "A+",
             "class": "MO*^",
             "description": "Commander Keen"
@@ -836,7 +705,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 88,
-            "sprite": ThingSprite.HDB1,
+            "sprite": "HDB1" /* ThingSprite.HDB1 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging victim, guts removed"
@@ -845,7 +714,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 88,
-            "sprite": ThingSprite.HDB2,
+            "sprite": "HDB2" /* ThingSprite.HDB2 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging victim, guts and brain removed"
@@ -854,7 +723,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 64,
-            "sprite": ThingSprite.HDB3,
+            "sprite": "HDB3" /* ThingSprite.HDB3 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging torso, looking down"
@@ -863,7 +732,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 64,
-            "sprite": ThingSprite.HDB4,
+            "sprite": "HDB4" /* ThingSprite.HDB4 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging torso, open skull"
@@ -872,7 +741,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 64,
-            "sprite": ThingSprite.HDB5,
+            "sprite": "HDB5" /* ThingSprite.HDB5 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging torso, looking up"
@@ -881,7 +750,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 64,
-            "sprite": ThingSprite.HDB6,
+            "sprite": "HDB6" /* ThingSprite.HDB6 */,
             "sequence": "A",
             "class": "O^",
             "description": "Hanging torso, brain removed"
@@ -890,7 +759,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.POB1,
+            "sprite": "POB1" /* ThingSprite.POB1 */,
             "sequence": "A",
             "class": "",
             "description": "Pool of blood"
@@ -899,7 +768,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.POB2,
+            "sprite": "POB2" /* ThingSprite.POB2 */,
             "sequence": "A",
             "class": "",
             "description": "Pool of blood"
@@ -908,7 +777,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BRS1,
+            "sprite": "BRS1" /* ThingSprite.BRS1 */,
             "sequence": "A",
             "class": "",
             "description": "Pool of brains"
@@ -917,7 +786,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SGN2,
+            "sprite": "SGN2" /* ThingSprite.SGN2 */,
             "sequence": "A",
             "class": "WP1",
             "description": "Super shotgun"
@@ -926,7 +795,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.MEGA,
+            "sprite": "MEGA" /* ThingSprite.MEGA */,
             "sequence": "ABCD",
             "class": "AP",
             "description": "Megasphere"
@@ -935,7 +804,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.SSWV,
+            "sprite": "SSWV" /* ThingSprite.SSWV */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Wolfenstein SS"
@@ -944,7 +813,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.TLMP,
+            "sprite": "TLMP" /* ThingSprite.TLMP */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Tall techno floor lamp"
@@ -953,7 +822,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.TLP2,
+            "sprite": "TLP2" /* ThingSprite.TLP2 */,
             "sequence": "ABCD",
             "class": "O",
             "description": "Short techno floor lamp"
@@ -962,7 +831,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 32,
-            "sprite": ThingSprite.none3,
+            "sprite": "none3" /* ThingSprite.none3 */,
             "sequence": "-",
             "class": "",
             "description": "Spawn spot"
@@ -971,7 +840,7 @@ class Things {
             "version": "2",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.BBRN,
+            "sprite": "BBRN" /* ThingSprite.BBRN */,
             "sequence": "A+",
             "class": "O2*",
             "description": "Romero's head"
@@ -980,7 +849,7 @@ class Things {
             "version": "2",
             "radius": 20,
             "height": 32,
-            "sprite": ThingSprite.none1,
+            "sprite": "none1" /* ThingSprite.none1 */,
             "sequence": "-",
             "class": "",
             "description": "Monster spawner"
@@ -989,7 +858,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SHOT,
+            "sprite": "SHOT" /* ThingSprite.SHOT */,
             "sequence": "A",
             "class": "WP1",
             "description": "Shotgun"
@@ -998,7 +867,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.MGUN,
+            "sprite": "MGUN" /* ThingSprite.MGUN */,
             "sequence": "A",
             "class": "WP1",
             "description": "Chaingun"
@@ -1007,7 +876,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.LAUN,
+            "sprite": "LAUN" /* ThingSprite.LAUN */,
             "sequence": "A",
             "class": "WP1",
             "description": "Rocket launcher"
@@ -1016,7 +885,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PLAS,
+            "sprite": "PLAS" /* ThingSprite.PLAS */,
             "sequence": "A",
             "class": "WP1",
             "description": "Plasma gun"
@@ -1025,7 +894,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.CSAW,
+            "sprite": "CSAW" /* ThingSprite.CSAW */,
             "sequence": "A",
             "class": "WP2",
             "description": "Chainsaw"
@@ -1034,7 +903,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BFUG,
+            "sprite": "BFUG" /* ThingSprite.BFUG */,
             "sequence": "A",
             "class": "WP1",
             "description": "BFG9000"
@@ -1043,7 +912,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.CLIP,
+            "sprite": "CLIP" /* ThingSprite.CLIP */,
             "sequence": "A",
             "class": "P1",
             "description": "Clip"
@@ -1052,7 +921,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SHEL,
+            "sprite": "SHEL" /* ThingSprite.SHEL */,
             "sequence": "A",
             "class": "P1",
             "description": "4 shotgun shells"
@@ -1061,7 +930,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.ROCK,
+            "sprite": "ROCK" /* ThingSprite.ROCK */,
             "sequence": "A",
             "class": "P1",
             "description": "Rocket"
@@ -1070,7 +939,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.STIM,
+            "sprite": "STIM" /* ThingSprite.STIM */,
             "sequence": "A",
             "class": "P3",
             "description": "Stimpack"
@@ -1079,7 +948,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.MEDI,
+            "sprite": "MEDI" /* ThingSprite.MEDI */,
             "sequence": "A",
             "class": "P3",
             "description": "Medikit"
@@ -1088,7 +957,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SOUL,
+            "sprite": "SOUL" /* ThingSprite.SOUL */,
             "sequence": "ABCDCB",
             "class": "AP",
             "description": "Supercharge"
@@ -1097,7 +966,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BON1,
+            "sprite": "BON1" /* ThingSprite.BON1 */,
             "sequence": "ABCDCB",
             "class": "AP",
             "description": "Health bonus"
@@ -1106,7 +975,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BON2,
+            "sprite": "BON2" /* ThingSprite.BON2 */,
             "sequence": "ABCDCB",
             "class": "AP",
             "description": "Armor bonus"
@@ -1115,7 +984,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.ARM1,
+            "sprite": "ARM1" /* ThingSprite.ARM1 */,
             "sequence": "AB",
             "class": "P1",
             "description": "Armor"
@@ -1124,7 +993,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.ARM2,
+            "sprite": "ARM2" /* ThingSprite.ARM2 */,
             "sequence": "AB",
             "class": "P2",
             "description": "Megaarmor"
@@ -1133,7 +1002,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PINV,
+            "sprite": "PINV" /* ThingSprite.PINV */,
             "sequence": "ABCD",
             "class": "AP",
             "description": "Invulnerability"
@@ -1142,7 +1011,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PSTR,
+            "sprite": "PSTR" /* ThingSprite.PSTR */,
             "sequence": "A",
             "class": "AP",
             "description": "Berserk"
@@ -1151,7 +1020,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PINS,
+            "sprite": "PINS" /* ThingSprite.PINS */,
             "sequence": "ABCD",
             "class": "AP",
             "description": "Partial invisibility"
@@ -1160,7 +1029,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SUIT,
+            "sprite": "SUIT" /* ThingSprite.SUIT */,
             "sequence": "A",
             "class": "P",
             "description": "Radiation shielding suit"
@@ -1169,7 +1038,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PMAP,
+            "sprite": "PMAP" /* ThingSprite.PMAP */,
             "sequence": "ABCDCB",
             "class": "AP1",
             "description": "Computer area map"
@@ -1178,7 +1047,7 @@ class Things {
             "version": "S",
             "radius": 16,
             "height": 16,
-            "sprite": ThingSprite.COLU,
+            "sprite": "COLU" /* ThingSprite.COLU */,
             "sequence": "A",
             "class": "O",
             "description": "Floor lamp"
@@ -1187,7 +1056,7 @@ class Things {
             "version": "S",
             "radius": 10,
             "height": 42,
-            "sprite": ThingSprite.BAR1,
+            "sprite": "BAR1" /* ThingSprite.BAR1 */,
             "sequence": "AB",
             "class": "O*",
             "description": "Exploding barrel"
@@ -1196,7 +1065,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.PVIS,
+            "sprite": "PVIS" /* ThingSprite.PVIS */,
             "sequence": "AB",
             "class": "AP",
             "description": "Light amplification visor"
@@ -1205,7 +1074,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.BROK,
+            "sprite": "BROK" /* ThingSprite.BROK */,
             "sequence": "A",
             "class": "P1",
             "description": "Box of rockets"
@@ -1214,7 +1083,7 @@ class Things {
             "version": "R",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.CELL,
+            "sprite": "CELL" /* ThingSprite.CELL */,
             "sequence": "A",
             "class": "P1",
             "description": "Energy cell"
@@ -1223,7 +1092,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.AMMO,
+            "sprite": "AMMO" /* ThingSprite.AMMO */,
             "sequence": "A",
             "class": "P1",
             "description": "Box of bullets"
@@ -1232,7 +1101,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 16,
-            "sprite": ThingSprite.SBOX,
+            "sprite": "SBOX" /* ThingSprite.SBOX */,
             "sequence": "A",
             "class": "P1",
             "description": "Box of shotgun shells"
@@ -1241,7 +1110,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.TROO,
+            "sprite": "TROO" /* ThingSprite.TROO */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Imp"
@@ -1250,7 +1119,7 @@ class Things {
             "version": "S",
             "radius": 30,
             "height": 56,
-            "sprite": ThingSprite.SARG,
+            "sprite": "SARG" /* ThingSprite.SARG */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Demon"
@@ -1259,7 +1128,7 @@ class Things {
             "version": "S",
             "radius": 24,
             "height": 64,
-            "sprite": ThingSprite.BOSS,
+            "sprite": "BOSS" /* ThingSprite.BOSS */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Baron of Hell"
@@ -1268,7 +1137,7 @@ class Things {
             "version": "S",
             "radius": 20,
             "height": 56,
-            "sprite": ThingSprite.POSS,
+            "sprite": "POSS" /* ThingSprite.POSS */,
             "sequence": "AB+",
             "class": "MO*",
             "description": "Zombieman"
@@ -1277,7 +1146,7 @@ class Things {
             "version": "R",
             "radius": 31,
             "height": 56,
-            "sprite": ThingSprite.HEAD,
+            "sprite": "HEAD" /* ThingSprite.HEAD */,
             "sequence": "A+",
             "class": "MO*^",
             "description": "Cacodemon"
@@ -1286,7 +1155,7 @@ class Things {
             "version": "R",
             "radius": 16,
             "height": 56,
-            "sprite": ThingSprite.SKUL,
+            "sprite": "SKUL" /* ThingSprite.SKUL */,
             "sequence": "AB+",
             "class": "M1O*^",
             "description": "Lost soul"
@@ -1505,8 +1374,10 @@ class MapView2D extends MapView {
             x: event.clientX * 1,
             y: event.clientY * 1
         });
+        const speed = event.shiftKey ? 0.15 : 0.08;
+        const scale = 1 + (event.deltaY < 0 ? speed : -speed);
         this.viewMatrix.translateSelf(pos.x, pos.y);
-        this.viewMatrix.scaleSelf(event.deltaY < 0 ? 1.1 : 0.9);
+        this.viewMatrix.scaleSelf(scale);
         this.viewMatrix.translateSelf(-pos.x, -pos.y);
         this.redraw();
     }
@@ -1596,17 +1467,17 @@ class MapView2D extends MapView {
         if (true) {
             context.beginPath();
             context.fillStyle = "red";
-            context.arc(0, 0, 30, 0, Math.PI * 2);
+            context.arc(0, 0, 20, 0, Math.PI * 2);
             context.fill();
         }
         context.lineWidth = 1;
         let i = 0;
         for (const linedef of map.linedefs) {
             context.beginPath();
-            if (linedef.hasFlag(LinedefFlags.SECRET)) {
+            if (linedef.hasFlag(32 /* LinedefFlags.SECRET */)) {
                 context.strokeStyle = "purple";
             }
-            else if (linedef.hasFlag(LinedefFlags.DONTDRAW)) {
+            else if (linedef.hasFlag(128 /* LinedefFlags.DONTDRAW */)) {
                 context.strokeStyle = "grey";
             }
             else {
@@ -1635,7 +1506,7 @@ class MapView2D extends MapView {
                 selectedThingEntry = thing;
                 continue;
             }
-            if (thing.description.sprite == ThingSprite.BON1) {
+            if (thing.type == 2014 /* ThingsType.HealthBonus */) {
                 context.beginPath();
                 context.fillStyle = "blue";
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
@@ -1688,24 +1559,41 @@ class MapView2D extends MapView {
         this.levelIndex = index;
         const wad = await this.wad;
         this.currentMap = wad.maps[index] ?? wad.maps[0];
-        const player1Start = this.currentMap.things.find((t) => t.type == 1);
+        const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
+        this.currentMap.linedefs;
         if (player1Start != undefined) {
-            // TODO: Fix. Works really badly on doom1.wad
-            this.viewMatrix.translateSelf(player1Start.x, player1Start.y);
+            // Eh. Centering on the player start isn't the best, but might be improvable.
+            // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
+            // this.redraw();
         }
-        // let x = Number.MAX_VALUE, y = Number.MAX_VALUE, dx = Number.MIN_VALUE, dy = Number.MIN_VALUE;
-        // for (const linedef of this.currentMap.linedefs) {
-        //     x = Math.min(x, linedef.vertexA.x);
-        //     x = Math.min(x, linedef.vertexB.x);
-        //     y = Math.min(y, linedef.vertexA.y * 1);
-        //     y = Math.min(y, linedef.vertexB.y * 1);
-        //     dx = Math.max(dx, linedef.vertexA.x);
-        //     dx = Math.max(dx, linedef.vertexB.x);
-        //     dy = Math.max(dy, linedef.vertexA.y * 1);
-        //     dy = Math.max(dy, linedef.vertexB.y * 1);
-        // }
-        // this.baseX = x;
-        // this.baseY = y;
+        this.fitLevelToView(this.currentMap);
+    }
+    fitLevelToView(map) {
+        let x = Number.MAX_VALUE;
+        let y = Number.MAX_VALUE;
+        let dx = Number.MIN_VALUE;
+        let dy = Number.MIN_VALUE;
+        for (const linedef of map.linedefs) {
+            x = Math.min(x, linedef.vertexA.x);
+            x = Math.min(x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y * 1);
+            y = Math.min(y, linedef.vertexB.y * 1);
+            dx = Math.max(dx, linedef.vertexA.x);
+            dx = Math.max(dx, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y * 1);
+            dy = Math.max(dy, linedef.vertexB.y * 1);
+        }
+        const canvasWidth = this.canvasWidth;
+        const canvasHeight = this.canvasHeight;
+        const scaleX = canvasWidth / (dx - x);
+        const scaleY = canvasHeight / (dy - y);
+        const scale = Math.min(scaleX, scaleY);
+        let translateX = (canvasWidth - (dx - x) * scale) / 2 - x * scale;
+        let translateY = (canvasHeight - (dy - y) * scale) / 2 - y * scale;
+        this.viewMatrix.a = scale;
+        this.viewMatrix.d = scale;
+        this.viewMatrix.e = translateX;
+        this.viewMatrix.f = translateY;
         this.redraw();
     }
 }
@@ -1936,29 +1824,6 @@ class ThingEntry {
         return entry.readAll(reader, (reader) => new ThingEntry(reader));
     }
 }
-var LinedefFlags;
-(function (LinedefFlags) {
-    LinedefFlags[LinedefFlags["BLOCKING"] = 1] = "BLOCKING";
-    LinedefFlags[LinedefFlags["BLOCKMONSTERS"] = 2] = "BLOCKMONSTERS";
-    LinedefFlags[LinedefFlags["TWOSIDED"] = 4] = "TWOSIDED";
-    LinedefFlags[LinedefFlags["DONTPEGTOP"] = 8] = "DONTPEGTOP";
-    LinedefFlags[LinedefFlags["DONTPEGBOTTOM"] = 16] = "DONTPEGBOTTOM";
-    LinedefFlags[LinedefFlags["SECRET"] = 32] = "SECRET";
-    LinedefFlags[LinedefFlags["SOUNDBLOCK"] = 64] = "SOUNDBLOCK";
-    LinedefFlags[LinedefFlags["DONTDRAW"] = 128] = "DONTDRAW";
-    LinedefFlags[LinedefFlags["MAPPED"] = 256] = "MAPPED";
-    LinedefFlags[LinedefFlags["REPEAT_SPECIAL"] = 512] = "REPEAT_SPECIAL";
-    LinedefFlags[LinedefFlags["SPAC_Use"] = 1024] = "SPAC_Use";
-    LinedefFlags[LinedefFlags["SPAC_MCross"] = 2048] = "SPAC_MCross";
-    LinedefFlags[LinedefFlags["SPAC_Impact"] = 3072] = "SPAC_Impact";
-    LinedefFlags[LinedefFlags["SPAC_Push"] = 4096] = "SPAC_Push";
-    LinedefFlags[LinedefFlags["SPAC_PCross"] = 5120] = "SPAC_PCross";
-    LinedefFlags[LinedefFlags["SPAC_UseThrough"] = 6144] = "SPAC_UseThrough";
-    LinedefFlags[LinedefFlags["TRANSLUCENT"] = 4096] = "TRANSLUCENT";
-    LinedefFlags[LinedefFlags["MONSTERSCANACTIVATE"] = 8192] = "MONSTERSCANACTIVATE";
-    LinedefFlags[LinedefFlags["BLOCK_PLAYERS"] = 16384] = "BLOCK_PLAYERS";
-    LinedefFlags[LinedefFlags["BLOCKEVERYTHING"] = 32768] = "BLOCKEVERYTHING";
-})(LinedefFlags || (LinedefFlags = {}));
 class LinedefEntry {
     map;
     vertexAIndex;
@@ -2075,19 +1940,6 @@ class SubSectorEntry {
         return entry.readAll(reader, (reader) => new SubSectorEntry(map, reader));
     }
 }
-var MapEntryName;
-(function (MapEntryName) {
-    MapEntryName["THINGS"] = "THINGS";
-    MapEntryName["LINEDEFS"] = "LINEDEFS";
-    MapEntryName["SIDEDEFS"] = "SIDEDEFS";
-    MapEntryName["VERTEXES"] = "VERTEXES";
-    MapEntryName["SEGS"] = "SEGS";
-    MapEntryName["SSECTORS"] = "SSECTORS";
-    MapEntryName["NODES"] = "NODES";
-    MapEntryName["SECTORS"] = "SECTORS";
-    MapEntryName["REJECT"] = "REJECT";
-    MapEntryName["BLOCKMAP"] = "BLOCKMAP";
-})(MapEntryName || (MapEntryName = {}));
 class MapEntry {
     wadFile;
     name;
@@ -2134,16 +1986,16 @@ class MapEntry {
             if (entry.isMapEntry()) {
                 maps.push(new MapEntry(wadFile, reader, entry.name, {
                     map: entry,
-                    things: demandNextEntry(MapEntryName.THINGS),
-                    linedefs: demandNextEntry(MapEntryName.LINEDEFS),
-                    sidedefs: demandNextEntry(MapEntryName.SIDEDEFS),
-                    vertexes: demandNextEntry(MapEntryName.VERTEXES),
-                    segs: demandNextEntry(MapEntryName.SEGS),
-                    ssectors: demandNextEntry(MapEntryName.SSECTORS),
-                    nodes: demandNextEntry(MapEntryName.NODES),
-                    sectors: demandNextEntry(MapEntryName.SECTORS),
-                    reject: demandNextEntry(MapEntryName.REJECT),
-                    blockmap: demandNextEntry(MapEntryName.BLOCKMAP),
+                    things: demandNextEntry("THINGS" /* MapEntryName.THINGS */),
+                    linedefs: demandNextEntry("LINEDEFS" /* MapEntryName.LINEDEFS */),
+                    sidedefs: demandNextEntry("SIDEDEFS" /* MapEntryName.SIDEDEFS */),
+                    vertexes: demandNextEntry("VERTEXES" /* MapEntryName.VERTEXES */),
+                    segs: demandNextEntry("SEGS" /* MapEntryName.SEGS */),
+                    ssectors: demandNextEntry("SSECTORS" /* MapEntryName.SSECTORS */),
+                    nodes: demandNextEntry("NODES" /* MapEntryName.NODES */),
+                    sectors: demandNextEntry("SECTORS" /* MapEntryName.SECTORS */),
+                    reject: demandNextEntry("REJECT" /* MapEntryName.REJECT */),
+                    blockmap: demandNextEntry("BLOCKMAP" /* MapEntryName.BLOCKMAP */),
                 }));
             }
         }
