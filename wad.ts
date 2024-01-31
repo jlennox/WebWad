@@ -224,6 +224,10 @@ class Vertex {
     public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly Vertex[] {
         return entry.readAll(reader, (reader) => new Vertex(reader));
     }
+
+    public static areEqual(a: Vertex, b: Vertex): boolean {
+        return a.x == b.x && a.y == b.y;
+    }
 }
 
 class ThingEntry {
@@ -306,11 +310,16 @@ class LinedefEntry {
     public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly LinedefEntry[] {
         return entry.readAll(reader, (reader) => new LinedefEntry(map, reader));
     }
+
+    public static areEqual(a: LinedefEntry, b: LinedefEntry): boolean {
+        return Vertex.areEqual(a.vertexA, b.vertexA) && Vertex.areEqual(a.vertexB, b.vertexB);
+    }
 }
 
+// https://doomwiki.org/wiki/Sidedef
 class SideDefEntry {
-    public readonly xOffset: i16;
-    public readonly yOffset: i16;
+    public readonly textureXOffset: i16;
+    public readonly textureYOffset: i16;
     public readonly textureNameUpper: string;
     public readonly textureNameLower: string;
     public readonly textureNameMiddle: string;
@@ -322,8 +331,8 @@ class SideDefEntry {
     public get sector(): SectorEntry { return this.map.sectors[this.sectorIndex]; }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
-        this.xOffset = reader.readI16();
-        this.yOffset = reader.readI16();
+        this.textureXOffset = reader.readI16();
+        this.textureYOffset = reader.readI16();
         this.textureNameUpper = reader.readFixedLengthString(8);
         this.textureNameLower = reader.readFixedLengthString(8);
         this.textureNameMiddle = reader.readFixedLengthString(8);
@@ -335,6 +344,7 @@ class SideDefEntry {
     }
 }
 
+// https://doomwiki.org/wiki/Sector
 class SectorEntry {
     public readonly floorHeight: i16;
     public readonly ceilingHeight: i16;
@@ -445,6 +455,8 @@ class MapEntry {
     public readonly subSectors: readonly SubSectorEntry[];
     public readonly sectors: readonly SectorEntry[];
 
+    public readonly linedefsPerSector: Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}>;
+
     private readonly reader: BinaryFileReader
 
     constructor(wadFile: WadFile, reader: BinaryFileReader, name: string, entries: IMapDirectoryEntry) {
@@ -460,6 +472,27 @@ class MapEntry {
         this.segments = SegmentEntry.readAll(this, entries.segs, reader);
         this.subSectors = SubSectorEntry.readAll(this, entries.ssectors, reader);
         this.sectors = SectorEntry.readAll(this, entries.sectors, reader);
+
+        // Must come after sectors are loaded.
+        this.linedefsPerSector = this.getLinedefsPerSector();
+    }
+
+    private getLinedefsPerSector(): Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}> {
+        const linedefsPerSector: {[sectorIndex: number]: LinedefEntry[]} = {};
+        for (const linedef of this.linedefs) {
+            for (const sidedef of [linedef.sidedefLeft, linedef.sidedefRight]) {
+                if (sidedef == null) continue;
+
+                let linedefs = linedefsPerSector[sidedef.sectorIndex];
+                if (linedefs == null) {
+                    linedefs = [];
+                    linedefsPerSector[sidedef.sectorIndex] = linedefs;
+                }
+
+                linedefs.push(linedef);
+            }
+        }
+        return linedefsPerSector;
     }
 
     public getNodes(): readonly NodeEntry[] {

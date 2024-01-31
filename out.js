@@ -1294,6 +1294,8 @@ class MapView {
         this.canvas = canvas;
         this.wad = new Promise((resolve, _reject) => {
             canvas.addEventListener("dblclick", async (_event) => {
+                if (this.wad != null)
+                    return;
                 try {
                     canvas.classList.add("loading");
                     const response = await fetch("./doom1.wad");
@@ -1325,6 +1327,7 @@ class MapView {
             this.onMouseUp(e);
         });
         canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
+        canvas.addEventListener("dblclick", (e) => this.onDoubleClick(e));
         document.addEventListener("keyup", (e) => this.onKeyUp(e));
     }
     redraw() {
@@ -1388,8 +1391,8 @@ class MapView2D extends MapView {
         this.canvasHeight = this.canvas.height;
         this.redraw();
     }
-    onMouseDown(event) { }
-    onMouseUp(event) { }
+    onMouseDown(_event) { }
+    onMouseUp(_event) { }
     onMouseMove(event) {
         if (this.currentMap == null)
             return;
@@ -1408,6 +1411,170 @@ class MapView2D extends MapView {
             this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
             this.redraw();
         }
+    }
+    async onDoubleClick(_event) {
+        const wad = await this.wad;
+        const map = this.currentMap;
+        if (map == null)
+            return;
+        function isEar(v1, v2, v3, vertices) {
+            // Check if the triangle is convex (cross product should be positive)
+            if (crossProduct(v1, v2, v3) <= 0) {
+                return false;
+            }
+            // Check if no other vertex lies inside the triangle
+            for (let v of vertices) {
+                if (v !== v1 && v !== v2 && v !== v3 && pointInTriangle(v, v1, v2, v3)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        function crossProduct(v1, v2, v3) {
+            return (v2.x - v1.x) * (v3.y - v1.y) - (v2.y - v1.y) * (v3.x - v1.x);
+        }
+        function pointInTriangle(p, v1, v2, v3) {
+            let b1 = sign(p, v1, v2) < 0;
+            let b2 = sign(p, v2, v3) < 0;
+            let b3 = sign(p, v3, v1) < 0;
+            return ((b1 === b2) && (b2 === b3));
+        }
+        function sign(p1, p2, p3) {
+            return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+        }
+        function rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
+            const bl = { x: x, y: y, z: z };
+            const tl = { x: x, y: y2, z: z };
+            const br = { x: x2, y: y, z: z };
+            const tr = { x: x2, y: y2, z: z };
+            triangles.push({ v1: bl, v2: tl, v3: br });
+            triangles.push({ v1: tr, v2: tl, v3: br });
+        }
+        function rectToTriangleVertical(triangles, x, y, x2, y2, z, z2) {
+            const bl = { x: x, y: y, z: z };
+            const tr = { x: x2, y: y2, z: z2 };
+            triangles.push({
+                v1: { x: x, y: y, z: z2 },
+                v2: bl,
+                v3: tr,
+            });
+            triangles.push({
+                v1: bl,
+                v2: { x: x2, y: y2, z: z },
+                v3: tr,
+            });
+        }
+        function getTriangles() {
+            let triangles = [];
+            for (const linedef of map.linedefs) {
+                const a = linedef.vertexA;
+                const b = linedef.vertexB;
+                const sectora = linedef.sidedefLeft?.sector;
+                const sectorb = linedef.sidedefRight?.sector;
+                const floora = sectora?.floorHeight ?? 0;
+                const floorb = sectorb?.floorHeight ?? 0;
+                const ceilinga = sectora?.ceilingHeight ?? 0;
+                const ceilingb = sectorb?.ceilingHeight ?? 0;
+                // if (sectora == null || sectorb == null) continue;
+                // Renders the middle, woops.
+                // triangles.push({
+                //     v1: { x: a.x, y: a.y, z: side.sector.floorHeight },
+                //     v2: { x: a.x, y: a.y, z: side.sector.ceilingHeight },
+                //     v3: { x: b.x, y: b.y, z: side.sector.floorHeight },
+                // });
+                // triangles.push({
+                //     v1: { x: a.x, y: a.y, z: side.sector.ceilingHeight },
+                //     v2: { x: b.x, y: b.y, z: side.sector.ceilingHeight },
+                //     v3: { x: b.x, y: b.y, z: side.sector.floorHeight },
+                // });
+                // triangles.push({
+                //     v1: { x: a.x, y: a.y, z: floorb },
+                //     v2: { x: a.x, y: a.y, z: floora },
+                //     v3: { x: b.x, y: b.y, z: floorb },
+                // });
+                // triangles.push({
+                //     v1: { x: a.x, y: a.y, z: floora },
+                //     v2: { x: b.x, y: b.y, z: floora },
+                //     v3: { x: b.x, y: b.y, z: floorb },
+                // });
+                rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
+                // triangles.push({
+                //     v1: { x: a.x, y: a.y, z: ceilingb },
+                //     v2: { x: a.x, y: a.y, z: ceilinga },
+                //     v3: { x: b.x, y: b.y, z: ceilingb },
+                // });
+                // triangles.push({
+                //     v1: { x: a.x, y: a.y, z: ceilinga },
+                //     v2: { x: b.x, y: b.y, z: ceilinga },
+                //     v3: { x: b.x, y: b.y, z: ceilingb },
+                // });
+                rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
+            }
+            for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
+                const vertices = [];
+                const usedVertixes = new Set();
+                for (const linedef of linedefs) {
+                    for (const vertex of [linedef.vertexA, linedef.vertexB]) {
+                        const vertexValue = (vertex.x << 16) | vertex.y;
+                        if (!usedVertixes.has(vertexValue)) {
+                            usedVertixes.add(vertexValue);
+                            vertices.push(vertex);
+                        }
+                    }
+                }
+                const sector = map.sectors[parseInt(sectorIndex)];
+                const floorHeight = sector.floorHeight;
+                let x = Number.POSITIVE_INFINITY;
+                let y = Number.POSITIVE_INFINITY;
+                let dx = Number.NEGATIVE_INFINITY;
+                let dy = Number.NEGATIVE_INFINITY;
+                for (const linedef of linedefs) {
+                    x = Math.min(x, linedef.vertexA.x);
+                    x = Math.min(x, linedef.vertexB.x);
+                    y = Math.min(y, linedef.vertexA.y);
+                    y = Math.min(y, linedef.vertexB.y);
+                    dx = Math.max(dx, linedef.vertexA.x);
+                    dx = Math.max(dx, linedef.vertexB.x);
+                    dy = Math.max(dy, linedef.vertexA.y);
+                    dy = Math.max(dy, linedef.vertexB.y);
+                }
+                if (x == Number.POSITIVE_INFINITY ||
+                    y == Number.POSITIVE_INFINITY ||
+                    dx == Number.NEGATIVE_INFINITY ||
+                    dy == Number.NEGATIVE_INFINITY) {
+                    continue;
+                }
+                // triangles.push({
+                //     v1: { x: x, y: y, z: floorHeight },
+                //     v2: { x: x, y: dy, z: floorHeight },
+                //     v3: { x: dx, y: y, z: floorHeight },
+                // });
+                // triangles.push({
+                //     v1: { x: dx, y: dy, z: floorHeight },
+                //     v2: { x: x, y: dy, z: floorHeight },
+                //     v3: { x: dx, y: y, z: floorHeight },
+                // });
+                rectToTriangleHorizontal(triangles, x, y, dx, dy, floorHeight);
+            }
+            return triangles;
+        }
+        function getStl(triangles) {
+            let stlString = "solid doom_map\n";
+            for (let triangle of triangles) {
+                stlString += `facet normal 0 0 0\n`;
+                stlString += `    outer loop\n`;
+                stlString += `        vertex ${triangle.v1.x} ${triangle.v1.y} ${triangle.v1.z}\n`;
+                stlString += `        vertex ${triangle.v2.x} ${triangle.v2.y} ${triangle.v2.z}\n`;
+                stlString += `        vertex ${triangle.v3.x} ${triangle.v3.y} ${triangle.v3.z}\n`;
+                stlString += `    endloop\n`;
+                stlString += `endfacet\n`;
+            }
+            stlString += "endsolid doom_map\n";
+            return stlString;
+        }
+        const triangles = getTriangles();
+        const stl = getStl(triangles);
+        console.log(stl);
     }
     onKeyUp(event) {
         switch (event.key) {
@@ -1569,10 +1736,10 @@ class MapView2D extends MapView {
         this.fitLevelToView(this.currentMap);
     }
     fitLevelToView(map) {
-        let x = Number.MAX_VALUE;
-        let y = Number.MAX_VALUE;
-        let dx = Number.MIN_VALUE;
-        let dy = Number.MIN_VALUE;
+        let x = Number.POSITIVE_INFINITY;
+        let y = Number.POSITIVE_INFINITY;
+        let dx = Number.NEGATIVE_INFINITY;
+        let dy = Number.NEGATIVE_INFINITY;
         for (const linedef of map.linedefs) {
             x = Math.min(x, linedef.vertexA.x);
             x = Math.min(x, linedef.vertexB.x);
@@ -1610,12 +1777,13 @@ class MapView3D extends MapView {
         this.currentMap = wad.maps[index] ?? wad.maps[0];
     }
     draw() { }
-    onWheel(event) { }
-    onResize(event) { }
-    onMouseDown(event) { }
-    onMouseUp(event) { }
-    onMouseMove(event) { }
-    onKeyUp(event) { }
+    onWheel(_event) { }
+    onResize(_event) { }
+    onMouseDown(_event) { }
+    onMouseUp(_event) { }
+    onMouseMove(_event) { }
+    onDoubleClick(_event) { }
+    onKeyUp(_event) { }
 }
 const el = document.querySelector("canvas");
 const mapView = new MapView2D(el);
@@ -1801,6 +1969,9 @@ class Vertex {
     static readAll(entry, reader) {
         return entry.readAll(reader, (reader) => new Vertex(reader));
     }
+    static areEqual(a, b) {
+        return a.x == b.x && a.y == b.y;
+    }
 }
 class ThingEntry {
     x;
@@ -1853,11 +2024,15 @@ class LinedefEntry {
     static readAll(map, entry, reader) {
         return entry.readAll(reader, (reader) => new LinedefEntry(map, reader));
     }
+    static areEqual(a, b) {
+        return Vertex.areEqual(a.vertexA, b.vertexA) && Vertex.areEqual(a.vertexB, b.vertexB);
+    }
 }
+// https://doomwiki.org/wiki/Sidedef
 class SideDefEntry {
     map;
-    xOffset;
-    yOffset;
+    textureXOffset;
+    textureYOffset;
     textureNameUpper;
     textureNameLower;
     textureNameMiddle;
@@ -1868,8 +2043,8 @@ class SideDefEntry {
     get sector() { return this.map.sectors[this.sectorIndex]; }
     constructor(map, reader) {
         this.map = map;
-        this.xOffset = reader.readI16();
-        this.yOffset = reader.readI16();
+        this.textureXOffset = reader.readI16();
+        this.textureYOffset = reader.readI16();
         this.textureNameUpper = reader.readFixedLengthString(8);
         this.textureNameLower = reader.readFixedLengthString(8);
         this.textureNameMiddle = reader.readFixedLengthString(8);
@@ -1879,6 +2054,7 @@ class SideDefEntry {
         return entry.readAll(reader, (reader) => new SideDefEntry(map, reader));
     }
 }
+// https://doomwiki.org/wiki/Sector
 class SectorEntry {
     map;
     floorHeight;
@@ -1952,6 +2128,7 @@ class MapEntry {
     segments;
     subSectors;
     sectors;
+    linedefsPerSector;
     reader;
     constructor(wadFile, reader, name, entries) {
         this.wadFile = wadFile;
@@ -1966,6 +2143,24 @@ class MapEntry {
         this.segments = SegmentEntry.readAll(this, entries.segs, reader);
         this.subSectors = SubSectorEntry.readAll(this, entries.ssectors, reader);
         this.sectors = SectorEntry.readAll(this, entries.sectors, reader);
+        // Must come after sectors are loaded.
+        this.linedefsPerSector = this.getLinedefsPerSector();
+    }
+    getLinedefsPerSector() {
+        const linedefsPerSector = {};
+        for (const linedef of this.linedefs) {
+            for (const sidedef of [linedef.sidedefLeft, linedef.sidedefRight]) {
+                if (sidedef == null)
+                    continue;
+                let linedefs = linedefsPerSector[sidedef.sectorIndex];
+                if (linedefs == null) {
+                    linedefs = [];
+                    linedefsPerSector[sidedef.sectorIndex] = linedefs;
+                }
+                linedefs.push(linedef);
+            }
+        }
+        return linedefsPerSector;
     }
     getNodes() {
         return NodeEntry.loadAll(this.reader, this.entries.nodes);
