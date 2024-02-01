@@ -38,7 +38,7 @@ class BinaryFileReader {
         this.position = position;
     }
 
-    public pushPosition(newPosition?: number): void {
+    public pushPosition(newPosition?: number): void  {
         this.storedPositions.push(this.position);
         if (newPosition !== undefined) {
             this.position = newPosition;
@@ -110,6 +110,7 @@ class WadHeader {
     }
 }
 
+// https://doomwiki.org/wiki/WAD
 class WadFile {
     public readonly wadInfo: WadHeader;
     public readonly directory: readonly DirectoryEntry[];
@@ -538,6 +539,7 @@ class MapEntry {
     }
 }
 
+// https://doomwiki.org/wiki/Picture_format
 class PatchEntry {
     public readonly width: u16;
     public readonly height: u16;
