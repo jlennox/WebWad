@@ -23,32 +23,54 @@ class UserFileInput {
     }
 }
 
-class UserFileInputUI {
+class GlobalCanvas {
+    public readonly element: HTMLCanvasElement;
+
+    public get width(): number { return this._width; }
+    public get height(): number { return this._height; }
+
+    private _width: number;
+    private _height: number;
+
+    constructor(onResize?: (event: UIEvent) => void) {
+        document.querySelector("canvas")?.remove();
+
+        this.element = document.createElement("canvas");
+        this.element.style.position = "fixed";
+        this.element.width  = window.innerWidth;
+        this.element.height = window.innerHeight;
+        this._width = this.element.width;
+        this._height = this.element.height;
+
+        document.body.appendChild(this.element);
+
+        window.addEventListener("resize", (e) => {
+            this.element.width  = window.innerWidth;
+            this.element.height = window.innerHeight;
+            this._width = this.element.width;
+            this._height = this.element.height;
+
+            onResize?.(e);
+        });
+    }
+
+    public getContext(contextId: "2d", options?: CanvasRenderingContext2DSettings): CanvasRenderingContext2D | null;
+    public getContext(contextId: "bitmaprenderer", options?: ImageBitmapRenderingContextSettings): ImageBitmapRenderingContext | null;
+    public getContext(contextId: "webgl", options?: WebGLContextAttributes): WebGLRenderingContext | null;
+    public getContext(contextId: "webgl2", options?: WebGLContextAttributes): WebGL2RenderingContext | null;
+    public getContext(contextId: string, options?: any): RenderingContext | null {
+        return this.element.getContext(contextId, options);
+    }
 }
 
-abstract class MapView {
-    protected readonly wad: Promise<WadFile>;
-    protected isMouseDown: boolean = false;
-    protected currentMap: MapEntry | undefined;
+class UserFileInputUI {
+    private readonly canvas: GlobalCanvas = new GlobalCanvas(() => this.draw());
 
-    protected canvasWidth: number;
-    protected canvasHeight: number;
-
-    private awaitingRender: boolean = false;
-
-    constructor(protected readonly canvas: HTMLCanvasElement) {
-        canvas.style.position = "fixed";
-        canvas.width  = window.innerWidth;
-        canvas.height = window.innerHeight;
-        this.canvasWidth = canvas.width;
-        this.canvasHeight = canvas.height;
-
-        this.wad = new Promise<WadFile>((resolve, _reject) => {
-            canvas.addEventListener("dblclick", async (_event) => {
-                if (this.wad != null) return;
-
+    constructor() {
+        const wad = new Promise<WadFile>((resolve, _reject) => {
+            this.canvas.element.addEventListener("dblclick", async (_event) => {
                 try {
-                    canvas.classList.add("loading");
+                    this.canvas.element.classList.add("loading");
                     const response = await fetch("./doom1.wad");
                     if (response.status != 200) {
                         alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
@@ -57,38 +79,90 @@ abstract class MapView {
 
                     const blob = await response.blob()
                     resolve(new WadFile(await blob.arrayBuffer()));
-                }
-                finally {
-                    canvas.classList.remove("loading");
+                } finally {
+                    this.canvas.element.classList.remove("loading");
                 }
             });
 
-            new UserFileInput(canvas, (file) => {
+            new UserFileInput(this.canvas.element, (file) => {
                 const wad = new WadFile(file);
                 console.log("wad", wad);
                 resolve(wad);
             });
         });
 
-        document.addEventListener("wheel", (e) => this.onWheel(e));
-        window.addEventListener("resize", (e) => {
-            this.canvas.width  = window.innerWidth;
-            this.canvas.height = window.innerHeight;
-            this.canvasWidth = this.canvas.width;
-            this.canvasHeight = this.canvas.height;
-
-            this.onResize(e);
+        wad.then((wad) => {
+            const mapView = new MapView2D(wad);
+            mapView.displayLevel(0);
         });
-        canvas.addEventListener("mousedown", (e) => {
+
+        this.draw();
+    }
+
+    protected draw(): void {
+        this.drawHelpText2d();
+    }
+
+    private drawHelpText2d(): void {
+        const context = this.canvas.getContext("2d")!;
+        if (context == null) throw new Error("Unable to get 2d context");
+
+        function drawCentered(text: string, width: number, height: number): void {
+            const metrics = context.measureText(text);
+            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+            context.fillText(text, width / 2 - metrics.width / 2, height / 2 - actualHeight / 2, width);
+        }
+
+        function drawBottomLeft(text: string, width: number, height: number): void {
+            const lines = text.split("\n");
+            const linePadding = 5;
+            let yoffset = 0;
+            const heights = lines.map((t) => {
+                const metrics = context.measureText(t);
+                const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + linePadding;
+                yoffset += height;
+                return height;
+            });
+
+            for (let i = 0; i < lines.length; ++i) {
+                const line = lines[i];
+                context.fillText(line, 0, height - yoffset, width);
+                yoffset -= heights[i];
+            }
+        }
+
+        context.setTransform(undefined);
+        context.font = "40px serif";
+        drawCentered("Drag & Drop WAD", this.canvas.width, this.canvas.height);
+        context.font = "20px serif";
+        drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
+        context.font = "20px serif";
+        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+    }
+}
+
+abstract class MapView {
+    protected readonly canvas: GlobalCanvas = new GlobalCanvas();
+    protected isMouseDown: boolean = false;
+    protected currentMap: MapEntry;
+
+    private awaitingRender: boolean = false;
+
+    constructor(protected readonly wad: WadFile) {
+        this.currentMap = this.wad.maps[0];
+
+        document.addEventListener("wheel", (e) => this.onWheel(e));
+        window.addEventListener("resize", (e) => this.onResize(e));
+        this.canvas.element.addEventListener("mousedown", (e) => {
             this.isMouseDown = true;
             this.onMouseDown(e);
         });
-        canvas.addEventListener("mouseup", (e) => {
+        this.canvas.element.addEventListener("mouseup", (e) => {
             this.isMouseDown = false;
             this.onMouseUp(e);
         });
-        canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        canvas.addEventListener("dblclick", (e) => this.onDoubleClick(e));
+        this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
+        this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
         document.addEventListener("keyup", (e) => this.onKeyUp(e));
     }
 
@@ -122,8 +196,8 @@ class MapView2D extends MapView {
     private levelIndex: number = 0;
     private readonly viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
 
-    constructor(canvas: HTMLCanvasElement) {
-        super(canvas);
+    constructor(wad: WadFile) {
+        super(wad);
 
         this.thingHitTester = new HitTester<ThingEntry>(this.viewMatrix)
 
@@ -160,8 +234,6 @@ class MapView2D extends MapView {
     protected override onMouseUp(_event: MouseEvent): void {}
 
     protected override onMouseMove(event: MouseEvent): void {
-        if (this.currentMap == null) return;
-
         const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
         const newHighlightedIndex = hitResult?.index ?? -1;
         if (this.highlightedThingIndex != newHighlightedIndex) {
@@ -182,15 +254,8 @@ class MapView2D extends MapView {
     }
 
     protected override onDoubleClick(_event: MouseEvent): void {
-        const map = this.currentMap!;
-
-        if (map == null) {
-            console.error("No map!");
-            return;
-        }
-
         const triangles: ITriangle[] = [];
-        const rects = Triangulation.getRectangles(map);
+        const rects = Triangulation.getRectangles(this.currentMap);
         for (const rect of rects) {
             Triangulation.rectToTriangle(triangles, rect);
         }
@@ -211,54 +276,14 @@ class MapView2D extends MapView {
         }
     }
 
-    private drawHelpText2d(context: CanvasRenderingContext2D): void {
-        function drawCentered(text: string, width: number, height: number): void {
-            const metrics = context.measureText(text);
-            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
-            context.fillText(text, width / 2 - metrics.width / 2, height / 2 - actualHeight / 2, width);
-        }
-
-        function drawBottomLeft(text: string, width: number, height: number): void {
-            const lines = text.split("\n");
-            const linePadding = 5;
-            let yoffset = 0;
-            const heights = lines.map((t) => {
-                const metrics = context.measureText(t);
-                const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + linePadding;
-                yoffset += height;
-                return height;
-            });
-
-            for (let i = 0; i < lines.length; ++i) {
-                const line = lines[i];
-                context.fillText(line, 0, height - yoffset, width);
-                yoffset -= heights[i];
-            }
-        }
-
-        context.setTransform(undefined);
-        context.font = "40px serif";
-        drawCentered("Drag & Drop WAD", this.canvasWidth, this.canvasHeight);
-        context.font = "20px serif";
-        drawCentered("Or double click to load the shareware WAD", this.canvasWidth, this.canvasHeight + 40);
-        context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvasWidth, this.canvasHeight);
-    }
-
     protected override draw(): void {
         const context = this.canvas.getContext("2d")!;
         context.setTransform(undefined);
-        context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
         context.setTransform(this.viewMatrix);
 
         context.imageSmoothingQuality = "high";
         context.imageSmoothingEnabled = true;
-
-        const map = this.currentMap;
-        if (map == null) {
-            this.drawHelpText2d(context);
-            return;
-        }
 
         // Draws a circle at the origin.
         if (true) {
@@ -270,7 +295,7 @@ class MapView2D extends MapView {
 
         context.lineWidth = 1;
         let i = 0;
-        for (const linedef of map.linedefs) {
+        for (const linedef of this.currentMap.linedefs) {
             context.beginPath();
             if (linedef.hasFlag(LinedefFlags.SECRET)) {
                 context.strokeStyle = "purple";
@@ -288,8 +313,8 @@ class MapView2D extends MapView {
         // Not all entries are used as index values, so we must grab this while enumerating.
         let selectedThingEntry: ThingEntry | null = null;
         let thingIndex = 0;
-        this.thingHitTester.startUpdate(map.things.length);
-        for (const thing of map.things) {
+        this.thingHitTester.startUpdate(this.currentMap.things.length);
+        for (const thing of this.currentMap.things) {
             if (thing.description == null) {
                 continue;
             }
@@ -361,13 +386,12 @@ class MapView2D extends MapView {
         context.font = "12pt serif";
         context.fillStyle = "Black";
         context.textBaseline = "top";
-        context.fillText(this.currentMap?.displayName ?? "Unknown", 0, 0, 300);
+        context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
     }
 
     public override async displayLevel(index: number): Promise<void> {
         this.levelIndex = index;
-        const wad = await this.wad;
-        this.currentMap = wad.maps[index] ?? wad.maps[0];
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         const player1Start = this.currentMap.things.find((t) => t.type == ThingsType.PlayerOneStart);
         this.currentMap.linedefs
         if (player1Start != undefined) {
@@ -382,8 +406,8 @@ class MapView2D extends MapView {
     private fitLevelToView(map: MapEntry): void {
         const bb = LinedefEntry.getBoundingBox(map.linedefs);
 
-        const canvasWidth = this.canvasWidth;
-        const canvasHeight = this.canvasHeight;
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
         const scaleX = canvasWidth / bb.width;
         const scaleY = canvasHeight / bb.height;
         const scale = Math.min(scaleX, scaleY);
@@ -401,30 +425,124 @@ class MapView2D extends MapView {
 }
 
 class MapView3D extends MapView {
-    constructor(canvas: HTMLCanvasElement) {
-        super(canvas);
-        canvas.style.position = "fixed";
-        canvas.width  = window.innerWidth;
-        canvas.height = window.innerHeight;
-
+    constructor(wad: WadFile) {
+        super(wad);
         this.redraw();
     }
 
     public async displayLevel(index: number): Promise<void> {
-        const wad = await this.wad;
-        this.currentMap = wad.maps[index] ?? wad.maps[0];
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
     }
 
-    protected draw(): void {}
-    protected onWheel(_event: WheelEvent): void {}
-    protected onResize(_event: UIEvent): void {}
-    protected onMouseDown(_event: MouseEvent): void {}
-    protected onMouseUp(_event: MouseEvent): void {}
-    protected onMouseMove(_event: MouseEvent): void {}
-    protected onDoubleClick(_event: MouseEvent): void {}
-    protected onKeyUp(_event: KeyboardEvent): void {}
+    protected override draw(): void {
+        const gl = this.canvas.getContext("webgl");
+        if (gl === null) throw new Error("WebGL not available");
+
+        // Vertex shader program
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+
+            void main() {
+            gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+            }
+        `;
+
+        // Fragment shader program
+        const fsSource = `
+            void main() {
+            gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
+            }
+        `;
+
+        const loadShader = (type: number, source: string) => {
+            const shader = gl.createShader(type);
+            if (shader == null) throw new Error("Unable to create shader");
+
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+
+            return shader;
+        };
+
+        const shaderProgram = (() => {
+            const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource);
+            if (vertexShader == null) throw new Error("Unable to create vertex shader");
+            const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
+            if (fragmentShader == null) throw new Error("Unable to create fragment shader");
+
+            // Create the shader program
+            const shaderProgram = gl.createProgram();
+            if (shaderProgram == null) throw new Error("Unable to create shader program");
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+
+            // If creating the shader program failed, alert
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+
+            return shaderProgram;
+        })();
+
+        const verticesNumber: number[] = [];
+        const rectangles = Triangulation.getRectangles(this.currentMap!);
+
+        for (const rect of rectangles) {
+            verticesNumber.push(rect.x.x, rect.x.y, rect.x.z);
+            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
+            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
+
+            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
+            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
+            verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
+        }
+
+        const vertices = new Float32Array(verticesNumber);
+
+        // Bind the vertex buffer
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0); // Clear to black, fully opaque
+        gl.clearDepth(1.0); // Clear everything
+        gl.enable(gl.DEPTH_TEST); // Enable depth testing
+        gl.depthFunc(gl.LEQUAL); // Near things obscure far things
+
+        // Clear the canvas before we start drawing on it
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        // Tell WebGL to use our program when drawing
+        gl.useProgram(shaderProgram);
+
+        // Set the shader uniforms
+        const projectionMatrix = mat4.create(); // Assuming gl-matrix is available for matrix operations
+        mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
+
+        const modelViewMatrix = mat4.create();
+        mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
+
+        // Set the positions of the vertices
+        const numComponents = 3; // pull out 3 values per iteration
+        const type = gl.FLOAT; // the data in
+    }
+    protected override onWheel(_event: WheelEvent): void {}
+    protected override onResize(_event: UIEvent): void {}
+    protected override onMouseDown(_event: MouseEvent): void {}
+    protected override onMouseUp(_event: MouseEvent): void {}
+    protected override onMouseMove(_event: MouseEvent): void {}
+    protected override onDoubleClick(_event: MouseEvent): void {}
+    protected override onKeyUp(_event: KeyboardEvent): void {}
 }
 
-const el = document.querySelector<HTMLCanvasElement>("canvas")!;
-const mapView = new MapView2D(el);
-mapView.displayLevel(0);
+const _fileinput = new UserFileInputUI();

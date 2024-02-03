@@ -1289,6 +1289,107 @@ class Things {
         }
     };
 }
+class mat4 {
+    static create() {
+        const out = new Float32Array(16);
+        out[0] = 1;
+        out[5] = 1;
+        out[10] = 1;
+        out[15] = 1;
+        return out;
+    }
+    /**
+     * Generates a perspective projection matrix with the given bounds.
+     * The near/far clip planes correspond to a normalized device coordinate Z range of [-1, 1],
+     * which matches WebGL/OpenGL's clip volume.
+     * Passing null/undefined/no value for far will generate infinite projection matrix.
+     *
+     * @param {mat4} out mat4 frustum matrix will be written into
+     * @param {number} fovy Vertical field of view in radians
+     * @param {number} aspect Aspect ratio. typically viewport width/height
+     * @param {number} near Near bound of the frustum
+     * @param {number} far Far bound of the frustum, can be null or Infinity
+     * @returns {mat4} out
+     */
+    static perspective(out, fovy, aspect, near, far) {
+        const f = 1.0 / Math.tan(fovy / 2);
+        out[0] = f / aspect;
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
+        out[4] = 0;
+        out[5] = f;
+        out[6] = 0;
+        out[7] = 0;
+        out[8] = 0;
+        out[9] = 0;
+        out[11] = -1;
+        out[12] = 0;
+        out[13] = 0;
+        out[15] = 0;
+        if (far != null && far !== Infinity) {
+            const nf = 1 / (near - far);
+            out[10] = (far + near) * nf;
+            out[14] = 2 * far * near * nf;
+        }
+        else {
+            out[10] = -1;
+            out[14] = -2 * near;
+        }
+        return out;
+    }
+    /**
+     * Translate a mat4 by the given vector
+     *
+     * @param {mat4} out the receiving matrix
+     * @param {ReadonlyMat4} a the matrix to translate
+     * @param {ReadonlyVec3} v vector to translate by
+     * @returns {mat4} out
+     */
+    static translate(out, a, v) {
+        let x = v[0], y = v[1], z = v[2];
+        let a00, a01, a02, a03;
+        let a10, a11, a12, a13;
+        let a20, a21, a22, a23;
+        if (a === out) {
+            out[12] = a[0] * x + a[4] * y + a[8] * z + a[12];
+            out[13] = a[1] * x + a[5] * y + a[9] * z + a[13];
+            out[14] = a[2] * x + a[6] * y + a[10] * z + a[14];
+            out[15] = a[3] * x + a[7] * y + a[11] * z + a[15];
+        }
+        else {
+            a00 = a[0];
+            a01 = a[1];
+            a02 = a[2];
+            a03 = a[3];
+            a10 = a[4];
+            a11 = a[5];
+            a12 = a[6];
+            a13 = a[7];
+            a20 = a[8];
+            a21 = a[9];
+            a22 = a[10];
+            a23 = a[11];
+            out[0] = a00;
+            out[1] = a01;
+            out[2] = a02;
+            out[3] = a03;
+            out[4] = a10;
+            out[5] = a11;
+            out[6] = a12;
+            out[7] = a13;
+            out[8] = a20;
+            out[9] = a21;
+            out[10] = a22;
+            out[11] = a23;
+            out[12] = a00 * x + a10 * y + a20 * z + a[12];
+            out[13] = a01 * x + a11 * y + a21 * z + a[13];
+            out[14] = a02 * x + a12 * y + a22 * z + a[14];
+            out[15] = a03 * x + a13 * y + a23 * z + a[15];
+        }
+        return out;
+    }
+}
 class UserFileInput {
     constructor(target, loaded) {
         target.addEventListener("dragover", (event) => {
@@ -1310,29 +1411,40 @@ class UserFileInput {
         });
     }
 }
-class UserFileInputUI {
+class GlobalCanvas {
+    element;
+    get width() { return this._width; }
+    get height() { return this._height; }
+    _width;
+    _height;
+    constructor(onResize) {
+        document.querySelector("canvas")?.remove();
+        this.element = document.createElement("canvas");
+        this.element.style.position = "fixed";
+        this.element.width = window.innerWidth;
+        this.element.height = window.innerHeight;
+        this._width = this.element.width;
+        this._height = this.element.height;
+        document.body.appendChild(this.element);
+        window.addEventListener("resize", (e) => {
+            this.element.width = window.innerWidth;
+            this.element.height = window.innerHeight;
+            this._width = this.element.width;
+            this._height = this.element.height;
+            onResize?.(e);
+        });
+    }
+    getContext(contextId, options) {
+        return this.element.getContext(contextId, options);
+    }
 }
-class MapView {
-    canvas;
-    wad;
-    isMouseDown = false;
-    currentMap;
-    canvasWidth;
-    canvasHeight;
-    awaitingRender = false;
-    constructor(canvas) {
-        this.canvas = canvas;
-        canvas.style.position = "fixed";
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        this.canvasWidth = canvas.width;
-        this.canvasHeight = canvas.height;
-        this.wad = new Promise((resolve, _reject) => {
-            canvas.addEventListener("dblclick", async (_event) => {
-                if (this.wad != null)
-                    return;
+class UserFileInputUI {
+    canvas = new GlobalCanvas(() => this.draw());
+    constructor() {
+        const wad = new Promise((resolve, _reject) => {
+            this.canvas.element.addEventListener("dblclick", async (_event) => {
                 try {
-                    canvas.classList.add("loading");
+                    this.canvas.element.classList.add("loading");
                     const response = await fetch("./doom1.wad");
                     if (response.status != 200) {
                         alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
@@ -1342,33 +1454,79 @@ class MapView {
                     resolve(new WadFile(await blob.arrayBuffer()));
                 }
                 finally {
-                    canvas.classList.remove("loading");
+                    this.canvas.element.classList.remove("loading");
                 }
             });
-            new UserFileInput(canvas, (file) => {
+            new UserFileInput(this.canvas.element, (file) => {
                 const wad = new WadFile(file);
                 console.log("wad", wad);
                 resolve(wad);
             });
         });
-        document.addEventListener("wheel", (e) => this.onWheel(e));
-        window.addEventListener("resize", (e) => {
-            this.canvas.width = window.innerWidth;
-            this.canvas.height = window.innerHeight;
-            this.canvasWidth = this.canvas.width;
-            this.canvasHeight = this.canvas.height;
-            this.onResize(e);
+        wad.then((wad) => {
+            const mapView = new MapView2D(wad);
+            mapView.displayLevel(0);
         });
-        canvas.addEventListener("mousedown", (e) => {
+        this.draw();
+    }
+    draw() {
+        this.drawHelpText2d();
+    }
+    drawHelpText2d() {
+        const context = this.canvas.getContext("2d");
+        if (context == null)
+            throw new Error("Unable to get 2d context");
+        function drawCentered(text, width, height) {
+            const metrics = context.measureText(text);
+            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+            context.fillText(text, width / 2 - metrics.width / 2, height / 2 - actualHeight / 2, width);
+        }
+        function drawBottomLeft(text, width, height) {
+            const lines = text.split("\n");
+            const linePadding = 5;
+            let yoffset = 0;
+            const heights = lines.map((t) => {
+                const metrics = context.measureText(t);
+                const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + linePadding;
+                yoffset += height;
+                return height;
+            });
+            for (let i = 0; i < lines.length; ++i) {
+                const line = lines[i];
+                context.fillText(line, 0, height - yoffset, width);
+                yoffset -= heights[i];
+            }
+        }
+        context.setTransform(undefined);
+        context.font = "40px serif";
+        drawCentered("Drag & Drop WAD", this.canvas.width, this.canvas.height);
+        context.font = "20px serif";
+        drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
+        context.font = "20px serif";
+        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+    }
+}
+class MapView {
+    wad;
+    canvas = new GlobalCanvas();
+    isMouseDown = false;
+    currentMap;
+    awaitingRender = false;
+    constructor(wad) {
+        this.wad = wad;
+        this.currentMap = this.wad.maps[0];
+        document.addEventListener("wheel", (e) => this.onWheel(e));
+        window.addEventListener("resize", (e) => this.onResize(e));
+        this.canvas.element.addEventListener("mousedown", (e) => {
             this.isMouseDown = true;
             this.onMouseDown(e);
         });
-        canvas.addEventListener("mouseup", (e) => {
+        this.canvas.element.addEventListener("mouseup", (e) => {
             this.isMouseDown = false;
             this.onMouseUp(e);
         });
-        canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        canvas.addEventListener("dblclick", (e) => this.onDoubleClick(e));
+        this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
+        this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
         document.addEventListener("keyup", (e) => this.onKeyUp(e));
     }
     redraw() {
@@ -1387,8 +1545,8 @@ class MapView2D extends MapView {
     dashedStrokeOffset = 0;
     levelIndex = 0;
     viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
-    constructor(canvas) {
-        super(canvas);
+    constructor(wad) {
+        super(wad);
         this.thingHitTester = new HitTester(this.viewMatrix);
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
@@ -1418,8 +1576,6 @@ class MapView2D extends MapView {
     onMouseDown(_event) { }
     onMouseUp(_event) { }
     onMouseMove(event) {
-        if (this.currentMap == null)
-            return;
         const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
         const newHighlightedIndex = hitResult?.index ?? -1;
         if (this.highlightedThingIndex != newHighlightedIndex) {
@@ -1437,13 +1593,8 @@ class MapView2D extends MapView {
         }
     }
     onDoubleClick(_event) {
-        const map = this.currentMap;
-        if (map == null) {
-            console.error("No map!");
-            return;
-        }
         const triangles = [];
-        const rects = Triangulation.getRectangles(map);
+        const rects = Triangulation.getRectangles(this.currentMap);
         for (const rect of rects) {
             Triangulation.rectToTriangle(triangles, rect);
         }
@@ -1462,48 +1613,13 @@ class MapView2D extends MapView {
                 break;
         }
     }
-    drawHelpText2d(context) {
-        function drawCentered(text, width, height) {
-            const metrics = context.measureText(text);
-            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
-            context.fillText(text, width / 2 - metrics.width / 2, height / 2 - actualHeight / 2, width);
-        }
-        function drawBottomLeft(text, width, height) {
-            const lines = text.split("\n");
-            const linePadding = 5;
-            let yoffset = 0;
-            const heights = lines.map((t) => {
-                const metrics = context.measureText(t);
-                const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + linePadding;
-                yoffset += height;
-                return height;
-            });
-            for (let i = 0; i < lines.length; ++i) {
-                const line = lines[i];
-                context.fillText(line, 0, height - yoffset, width);
-                yoffset -= heights[i];
-            }
-        }
-        context.setTransform(undefined);
-        context.font = "40px serif";
-        drawCentered("Drag & Drop WAD", this.canvasWidth, this.canvasHeight);
-        context.font = "20px serif";
-        drawCentered("Or double click to load the shareware WAD", this.canvasWidth, this.canvasHeight + 40);
-        context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvasWidth, this.canvasHeight);
-    }
     draw() {
         const context = this.canvas.getContext("2d");
         context.setTransform(undefined);
-        context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
         context.setTransform(this.viewMatrix);
         context.imageSmoothingQuality = "high";
         context.imageSmoothingEnabled = true;
-        const map = this.currentMap;
-        if (map == null) {
-            this.drawHelpText2d(context);
-            return;
-        }
         // Draws a circle at the origin.
         if (true) {
             context.beginPath();
@@ -1513,7 +1629,7 @@ class MapView2D extends MapView {
         }
         context.lineWidth = 1;
         let i = 0;
-        for (const linedef of map.linedefs) {
+        for (const linedef of this.currentMap.linedefs) {
             context.beginPath();
             if (linedef.hasFlag(32 /* LinedefFlags.SECRET */)) {
                 context.strokeStyle = "purple";
@@ -1531,8 +1647,8 @@ class MapView2D extends MapView {
         // Not all entries are used as index values, so we must grab this while enumerating.
         let selectedThingEntry = null;
         let thingIndex = 0;
-        this.thingHitTester.startUpdate(map.things.length);
-        for (const thing of map.things) {
+        this.thingHitTester.startUpdate(this.currentMap.things.length);
+        for (const thing of this.currentMap.things) {
             if (thing.description == null) {
                 continue;
             }
@@ -1594,12 +1710,11 @@ class MapView2D extends MapView {
         context.font = "12pt serif";
         context.fillStyle = "Black";
         context.textBaseline = "top";
-        context.fillText(this.currentMap?.displayName ?? "Unknown", 0, 0, 300);
+        context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
     }
     async displayLevel(index) {
         this.levelIndex = index;
-        const wad = await this.wad;
-        this.currentMap = wad.maps[index] ?? wad.maps[0];
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
         this.currentMap.linedefs;
         if (player1Start != undefined) {
@@ -1611,8 +1726,8 @@ class MapView2D extends MapView {
     }
     fitLevelToView(map) {
         const bb = LinedefEntry.getBoundingBox(map.linedefs);
-        const canvasWidth = this.canvasWidth;
-        const canvasHeight = this.canvasHeight;
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
         const scaleX = canvasWidth / bb.width;
         const scaleY = canvasHeight / bb.height;
         const scale = Math.min(scaleX, scaleY);
@@ -1626,18 +1741,99 @@ class MapView2D extends MapView {
     }
 }
 class MapView3D extends MapView {
-    constructor(canvas) {
-        super(canvas);
-        canvas.style.position = "fixed";
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+    constructor(wad) {
+        super(wad);
         this.redraw();
     }
     async displayLevel(index) {
-        const wad = await this.wad;
-        this.currentMap = wad.maps[index] ?? wad.maps[0];
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
     }
-    draw() { }
+    draw() {
+        const gl = this.canvas.getContext("webgl");
+        if (gl === null)
+            throw new Error("WebGL not available");
+        // Vertex shader program
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+
+            void main() {
+            gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+            }
+        `;
+        // Fragment shader program
+        const fsSource = `
+            void main() {
+            gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
+            }
+        `;
+        const loadShader = (type, source) => {
+            const shader = gl.createShader(type);
+            if (shader == null)
+                throw new Error("Unable to create shader");
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        };
+        const shaderProgram = (() => {
+            const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource);
+            if (vertexShader == null)
+                throw new Error("Unable to create vertex shader");
+            const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
+            if (fragmentShader == null)
+                throw new Error("Unable to create fragment shader");
+            // Create the shader program
+            const shaderProgram = gl.createProgram();
+            if (shaderProgram == null)
+                throw new Error("Unable to create shader program");
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+            // If creating the shader program failed, alert
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+            return shaderProgram;
+        })();
+        const verticesNumber = [];
+        const rectangles = Triangulation.getRectangles(this.currentMap);
+        for (const rect of rectangles) {
+            verticesNumber.push(rect.x.x, rect.x.y, rect.x.z);
+            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
+            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
+            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
+            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
+            verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
+        }
+        const vertices = new Float32Array(verticesNumber);
+        // Bind the vertex buffer
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0); // Clear to black, fully opaque
+        gl.clearDepth(1.0); // Clear everything
+        gl.enable(gl.DEPTH_TEST); // Enable depth testing
+        gl.depthFunc(gl.LEQUAL); // Near things obscure far things
+        // Clear the canvas before we start drawing on it
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        // Tell WebGL to use our program when drawing
+        gl.useProgram(shaderProgram);
+        // Set the shader uniforms
+        const projectionMatrix = mat4.create(); // Assuming gl-matrix is available for matrix operations
+        mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
+        const modelViewMatrix = mat4.create();
+        mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
+        // Set the positions of the vertices
+        const numComponents = 3; // pull out 3 values per iteration
+        const type = gl.FLOAT; // the data in
+    }
     onWheel(_event) { }
     onResize(_event) { }
     onMouseDown(_event) { }
@@ -1646,9 +1842,7 @@ class MapView3D extends MapView {
     onDoubleClick(_event) { }
     onKeyUp(_event) { }
 }
-const el = document.querySelector("canvas");
-const mapView = new MapView2D(el);
-mapView.displayLevel(0);
+const _fileinput = new UserFileInputUI();
 class BinaryFileReader {
     position = 0;
     u8;
