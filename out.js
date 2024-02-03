@@ -51,6 +51,133 @@ class HitTester {
         return null;
     }
 }
+class Matrix {
+    static vectexMultiply(m, v) {
+        return {
+            x: m.a * v.x + m.c * v.y + m.e,
+            y: m.b * v.x + m.d * v.y + m.f
+        };
+    }
+}
+class Triangulation {
+    // Rectangles are a compromise because floors require triangles.
+    // This exists for experimental types of rendering that require rectangles.
+    static getRectangles(map) {
+        let rectangles = [];
+        for (const linedef of map.linedefs) {
+            const a = linedef.vertexA;
+            const b = linedef.vertexB;
+            const sectora = linedef.sidedefLeft?.sector;
+            const sectorb = linedef.sidedefRight?.sector;
+            const floora = sectora?.floorHeight ?? 0;
+            const floorb = sectorb?.floorHeight ?? 0;
+            const ceilinga = sectora?.ceilingHeight ?? 0;
+            const ceilingb = sectorb?.ceilingHeight ?? 0;
+            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
+            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
+            const bl = { x: a.x, y: a.y, z: floora };
+            const br = { x: a.x, y: a.y, z: ceilinga };
+            const tl = { x: b.x, y: b.y, z: floorb };
+            const tr = { x: b.x, y: b.y, z: ceilingb };
+            rectangles.push({
+                x: bl,
+                y: bl,
+                x2: tl,
+                y2: tl
+            });
+            rectangles.push({
+                x: br,
+                y: br,
+                x2: tr,
+                y2: tr
+            });
+        }
+        for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
+            const vertices = [];
+            const usedVertixes = new Set();
+            for (const linedef of linedefs) {
+                for (const vertex of [linedef.vertexA, linedef.vertexB]) {
+                    const vertexValue = (vertex.x << 16) | vertex.y;
+                    if (!usedVertixes.has(vertexValue)) {
+                        usedVertixes.add(vertexValue);
+                        vertices.push(vertex);
+                    }
+                }
+            }
+            const sector = map.sectors[parseInt(sectorIndex)];
+            const floorHeight = sector.floorHeight;
+            let x = Number.POSITIVE_INFINITY;
+            let y = Number.POSITIVE_INFINITY;
+            let dx = Number.NEGATIVE_INFINITY;
+            let dy = Number.NEGATIVE_INFINITY;
+            for (const linedef of linedefs) {
+                x = Math.min(x, linedef.vertexA.x);
+                x = Math.min(x, linedef.vertexB.x);
+                y = Math.min(y, linedef.vertexA.y);
+                y = Math.min(y, linedef.vertexB.y);
+                dx = Math.max(dx, linedef.vertexA.x);
+                dx = Math.max(dx, linedef.vertexB.x);
+                dy = Math.max(dy, linedef.vertexA.y);
+                dy = Math.max(dy, linedef.vertexB.y);
+            }
+            if (x == Number.POSITIVE_INFINITY ||
+                y == Number.POSITIVE_INFINITY ||
+                dx == Number.NEGATIVE_INFINITY ||
+                dy == Number.NEGATIVE_INFINITY) {
+                continue;
+            }
+            // Triangulation.rectToTriangleHorizontal(triangles, x, y, dx, dy, floorHeight);
+            rectangles.push({
+                x: { x: x, y: y, z: floorHeight },
+                y: { x: x, y: dy, z: floorHeight },
+                x2: { x: dx, y: y, z: floorHeight },
+                y2: { x: dx, y: dy, z: floorHeight }
+            });
+        }
+        return rectangles;
+    }
+    static rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
+        const bl = { x: x, y: y, z: z };
+        const tl = { x: x, y: y2, z: z };
+        const br = { x: x2, y: y, z: z };
+        const tr = { x: x2, y: y2, z: z };
+        triangles.push({ v1: bl, v2: tl, v3: br });
+        triangles.push({ v1: tr, v2: tl, v3: br });
+    }
+    static rectToTriangleVertical(triangles, x, y, x2, y2, z, z2) {
+        const bl = { x: x, y: y, z: z };
+        const br = { x: x, y: y, z: z2 };
+        const tl = { x: x2, y: y2, z: z };
+        const tr = { x: x2, y: y2, z: z2 };
+        triangles.push({ v1: br, v2: bl, v3: tr });
+        triangles.push({ v1: bl, v2: tl, v3: tr });
+    }
+    static rectToTriangle(triangles, rect) {
+        if (rect.x.z == rect.x2.z) {
+            Triangulation.rectToTriangleHorizontal(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.y2.y, rect.x.z);
+        }
+        else {
+            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.x2.z);
+        }
+    }
+    static getStl(triangles) {
+        let stlString = "solid doom_map\n";
+        for (let triangle of triangles) {
+            const v1 = triangle.v1;
+            const v2 = triangle.v2;
+            const v3 = triangle.v3;
+            stlString += `facet normal 0 0 0\n`;
+            stlString += `    outer loop\n`;
+            stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
+            stlString += `        vertex ${v2.x} ${v2.y} ${v2.z}\n`;
+            stlString += `        vertex ${v3.x} ${v3.y} ${v3.z}\n`;
+            stlString += `    endloop\n`;
+            stlString += `endfacet\n`;
+        }
+        stlString += "endsolid doom_map\n";
+        return stlString;
+    }
+}
 class Things {
     static descriptions = {
         1: {
@@ -1162,107 +1289,6 @@ class Things {
         }
     };
 }
-class mat4 {
-    static create() {
-        const out = new Float32Array(16);
-        out[0] = 1;
-        out[5] = 1;
-        out[10] = 1;
-        out[15] = 1;
-        return out;
-    }
-    /**
-     * Generates a perspective projection matrix with the given bounds.
-     * The near/far clip planes correspond to a normalized device coordinate Z range of [-1, 1],
-     * which matches WebGL/OpenGL's clip volume.
-     * Passing null/undefined/no value for far will generate infinite projection matrix.
-     *
-     * @param {mat4} out mat4 frustum matrix will be written into
-     * @param {number} fovy Vertical field of view in radians
-     * @param {number} aspect Aspect ratio. typically viewport width/height
-     * @param {number} near Near bound of the frustum
-     * @param {number} far Far bound of the frustum, can be null or Infinity
-     * @returns {mat4} out
-     */
-    static perspective(out, fovy, aspect, near, far) {
-        const f = 1.0 / Math.tan(fovy / 2);
-        out[0] = f / aspect;
-        out[1] = 0;
-        out[2] = 0;
-        out[3] = 0;
-        out[4] = 0;
-        out[5] = f;
-        out[6] = 0;
-        out[7] = 0;
-        out[8] = 0;
-        out[9] = 0;
-        out[11] = -1;
-        out[12] = 0;
-        out[13] = 0;
-        out[15] = 0;
-        if (far != null && far !== Infinity) {
-            const nf = 1 / (near - far);
-            out[10] = (far + near) * nf;
-            out[14] = 2 * far * near * nf;
-        }
-        else {
-            out[10] = -1;
-            out[14] = -2 * near;
-        }
-        return out;
-    }
-    /**
-     * Translate a mat4 by the given vector
-     *
-     * @param {mat4} out the receiving matrix
-     * @param {ReadonlyMat4} a the matrix to translate
-     * @param {ReadonlyVec3} v vector to translate by
-     * @returns {mat4} out
-     */
-    static translate(out, a, v) {
-        let x = v[0], y = v[1], z = v[2];
-        let a00, a01, a02, a03;
-        let a10, a11, a12, a13;
-        let a20, a21, a22, a23;
-        if (a === out) {
-            out[12] = a[0] * x + a[4] * y + a[8] * z + a[12];
-            out[13] = a[1] * x + a[5] * y + a[9] * z + a[13];
-            out[14] = a[2] * x + a[6] * y + a[10] * z + a[14];
-            out[15] = a[3] * x + a[7] * y + a[11] * z + a[15];
-        }
-        else {
-            a00 = a[0];
-            a01 = a[1];
-            a02 = a[2];
-            a03 = a[3];
-            a10 = a[4];
-            a11 = a[5];
-            a12 = a[6];
-            a13 = a[7];
-            a20 = a[8];
-            a21 = a[9];
-            a22 = a[10];
-            a23 = a[11];
-            out[0] = a00;
-            out[1] = a01;
-            out[2] = a02;
-            out[3] = a03;
-            out[4] = a10;
-            out[5] = a11;
-            out[6] = a12;
-            out[7] = a13;
-            out[8] = a20;
-            out[9] = a21;
-            out[10] = a22;
-            out[11] = a23;
-            out[12] = a00 * x + a10 * y + a20 * z + a[12];
-            out[13] = a01 * x + a11 * y + a21 * z + a[13];
-            out[14] = a02 * x + a12 * y + a22 * z + a[14];
-            out[15] = a03 * x + a13 * y + a23 * z + a[15];
-        }
-        return out;
-    }
-}
 class UserFileInput {
     constructor(target, loaded) {
         target.addEventListener("dragover", (event) => {
@@ -1284,14 +1310,23 @@ class UserFileInput {
         });
     }
 }
+class UserFileInputUI {
+}
 class MapView {
     canvas;
     wad;
     isMouseDown = false;
     currentMap;
+    canvasWidth;
+    canvasHeight;
     awaitingRender = false;
     constructor(canvas) {
         this.canvas = canvas;
+        canvas.style.position = "fixed";
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        this.canvasWidth = canvas.width;
+        this.canvasHeight = canvas.height;
         this.wad = new Promise((resolve, _reject) => {
             canvas.addEventListener("dblclick", async (_event) => {
                 if (this.wad != null)
@@ -1317,7 +1352,13 @@ class MapView {
             });
         });
         document.addEventListener("wheel", (e) => this.onWheel(e));
-        window.addEventListener("resize", (e) => this.onResize(e));
+        window.addEventListener("resize", (e) => {
+            this.canvas.width = window.innerWidth;
+            this.canvas.height = window.innerHeight;
+            this.canvasWidth = this.canvas.width;
+            this.canvasHeight = this.canvas.height;
+            this.onResize(e);
+        });
         canvas.addEventListener("mousedown", (e) => {
             this.isMouseDown = true;
             this.onMouseDown(e);
@@ -1340,146 +1381,14 @@ class MapView {
         });
     }
 }
-function matVecMul(m, v) {
-    return {
-        x: m.a * v.x + m.c * v.y + m.e,
-        y: m.b * v.x + m.d * v.y + m.f
-    };
-}
-class Triangulation {
-    static getRectangles(map) {
-        let rectangles = [];
-        for (const linedef of map.linedefs) {
-            const a = linedef.vertexA;
-            const b = linedef.vertexB;
-            const sectora = linedef.sidedefLeft?.sector;
-            const sectorb = linedef.sidedefRight?.sector;
-            const floora = sectora?.floorHeight ?? 0;
-            const floorb = sectorb?.floorHeight ?? 0;
-            const ceilinga = sectora?.ceilingHeight ?? 0;
-            const ceilingb = sectorb?.ceilingHeight ?? 0;
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
-            const bl = { x: a.x, y: a.y, z: floora };
-            const br = { x: a.x, y: a.y, z: ceilingb };
-            const tl = { x: b.x, y: b.y, z: floora };
-            const tr = { x: b.x, y: b.y, z: ceilingb };
-            rectangles.push({
-                x: { x: a.x, y: a.y, z: floora },
-                y: { x: a.x, y: a.y, z: floora },
-                x2: { x: b.x, y: b.y, z: floorb },
-                y2: { x: b.x, y: b.y, z: floorb }
-            });
-            rectangles.push({
-                x: { x: a.x, y: a.y, z: ceilinga },
-                y: { x: a.x, y: a.y, z: ceilinga },
-                x2: { x: b.x, y: b.y, z: ceilingb },
-                y2: { x: b.x, y: b.y, z: ceilingb }
-            });
-        }
-        for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
-            const vertices = [];
-            const usedVertixes = new Set();
-            for (const linedef of linedefs) {
-                for (const vertex of [linedef.vertexA, linedef.vertexB]) {
-                    const vertexValue = (vertex.x << 16) | vertex.y;
-                    if (!usedVertixes.has(vertexValue)) {
-                        usedVertixes.add(vertexValue);
-                        vertices.push(vertex);
-                    }
-                }
-            }
-            const sector = map.sectors[parseInt(sectorIndex)];
-            const floorHeight = sector.floorHeight;
-            let x = Number.POSITIVE_INFINITY;
-            let y = Number.POSITIVE_INFINITY;
-            let dx = Number.NEGATIVE_INFINITY;
-            let dy = Number.NEGATIVE_INFINITY;
-            for (const linedef of linedefs) {
-                x = Math.min(x, linedef.vertexA.x);
-                x = Math.min(x, linedef.vertexB.x);
-                y = Math.min(y, linedef.vertexA.y);
-                y = Math.min(y, linedef.vertexB.y);
-                dx = Math.max(dx, linedef.vertexA.x);
-                dx = Math.max(dx, linedef.vertexB.x);
-                dy = Math.max(dy, linedef.vertexA.y);
-                dy = Math.max(dy, linedef.vertexB.y);
-            }
-            if (x == Number.POSITIVE_INFINITY ||
-                y == Number.POSITIVE_INFINITY ||
-                dx == Number.NEGATIVE_INFINITY ||
-                dy == Number.NEGATIVE_INFINITY) {
-                continue;
-            }
-            // Triangulation.rectToTriangleHorizontal(triangles, x, y, dx, dy, floorHeight);
-            rectangles.push({
-                x: { x: x, y: y, z: floorHeight },
-                y: { x: x, y: dy, z: floorHeight },
-                x2: { x: dx, y: y, z: floorHeight },
-                y2: { x: dx, y: dy, z: floorHeight }
-            });
-        }
-        return rectangles;
-    }
-    static rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
-        const bl = { x: x, y: y, z: z };
-        const tl = { x: x, y: y2, z: z };
-        const br = { x: x2, y: y, z: z };
-        const tr = { x: x2, y: y2, z: z };
-        triangles.push({ v1: bl, v2: tl, v3: br });
-        triangles.push({ v1: tr, v2: tl, v3: br });
-    }
-    static rectToTriangleVertical(triangles, x, y, x2, y2, z, z2) {
-        const bl = { x: x, y: y, z: z };
-        const br = { x: x, y: y, z: z2 };
-        const tl = { x: x2, y: y2, z: z };
-        const tr = { x: x2, y: y2, z: z2 };
-        triangles.push({ v1: br, v2: bl, v3: tr });
-        triangles.push({ v1: bl, v2: tl, v3: tr });
-    }
-    static rectToTriangle(triangles, rect) {
-        if (rect.x.z == rect.x2.z) {
-            Triangulation.rectToTriangleHorizontal(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.y2.y, rect.x.z);
-        }
-        else {
-            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.x2.z);
-        }
-    }
-    static getStl(triangles) {
-        let stlString = "solid doom_map\n";
-        for (let triangle of triangles) {
-            const v1 = triangle.v1;
-            const v2 = triangle.v2;
-            const v3 = triangle.v3;
-            stlString += `facet normal 0 0 0\n`;
-            stlString += `    outer loop\n`;
-            stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
-            stlString += `        vertex ${v2.x} ${v2.y} ${v2.z}\n`;
-            stlString += `        vertex ${v3.x} ${v3.y} ${v3.z}\n`;
-            stlString += `    endloop\n`;
-            stlString += `endfacet\n`;
-        }
-        stlString += "endsolid doom_map\n";
-        return stlString;
-    }
-}
-// class MapView3D extends MapView {
-// }
 class MapView2D extends MapView {
     thingHitTester;
-    canvasWidth;
-    canvasHeight;
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
     levelIndex = 0;
     viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     constructor(canvas) {
         super(canvas);
-        canvas.style.position = "fixed";
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        this.canvasWidth = canvas.width;
-        this.canvasHeight = canvas.height;
         this.thingHitTester = new HitTester(this.viewMatrix);
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
@@ -1492,7 +1401,7 @@ class MapView2D extends MapView {
     onWheel(event) {
         if (this.currentMap == null)
             return;
-        const pos = matVecMul(this.viewMatrix.inverse(), {
+        const pos = Matrix.vectexMultiply(this.viewMatrix.inverse(), {
             x: event.clientX * 1,
             y: event.clientY * 1
         });
@@ -1503,11 +1412,7 @@ class MapView2D extends MapView {
         this.viewMatrix.translateSelf(-pos.x, -pos.y);
         this.redraw();
     }
-    onResize(event) {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
-        this.canvasWidth = this.canvas.width;
-        this.canvasHeight = this.canvas.height;
+    onResize(_event) {
         this.redraw();
     }
     onMouseDown(_event) { }
@@ -1705,27 +1610,14 @@ class MapView2D extends MapView {
         this.fitLevelToView(this.currentMap);
     }
     fitLevelToView(map) {
-        let x = Number.POSITIVE_INFINITY;
-        let y = Number.POSITIVE_INFINITY;
-        let dx = Number.NEGATIVE_INFINITY;
-        let dy = Number.NEGATIVE_INFINITY;
-        for (const linedef of map.linedefs) {
-            x = Math.min(x, linedef.vertexA.x);
-            x = Math.min(x, linedef.vertexB.x);
-            y = Math.min(y, linedef.vertexA.y * 1);
-            y = Math.min(y, linedef.vertexB.y * 1);
-            dx = Math.max(dx, linedef.vertexA.x);
-            dx = Math.max(dx, linedef.vertexB.x);
-            dy = Math.max(dy, linedef.vertexA.y * 1);
-            dy = Math.max(dy, linedef.vertexB.y * 1);
-        }
+        const bb = LinedefEntry.getBoundingBox(map.linedefs);
         const canvasWidth = this.canvasWidth;
         const canvasHeight = this.canvasHeight;
-        const scaleX = canvasWidth / (dx - x);
-        const scaleY = canvasHeight / (dy - y);
+        const scaleX = canvasWidth / bb.width;
+        const scaleY = canvasHeight / bb.height;
         const scale = Math.min(scaleX, scaleY);
-        let translateX = (canvasWidth - (dx - x) * scale) / 2 - x * scale;
-        let translateY = (canvasHeight - (dy - y) * scale) / 2 - y * scale;
+        let translateX = (canvasWidth - bb.width * scale) / 2 - bb.left * scale;
+        let translateY = (canvasHeight - bb.height * scale) / 2 - bb.top * scale;
         this.viewMatrix.a = scale;
         this.viewMatrix.d = scale;
         this.viewMatrix.e = translateX;
@@ -1835,14 +1727,23 @@ class BinaryFileReader {
         return result;
     }
 }
+var WadIdentifier;
+(function (WadIdentifier) {
+    WadIdentifier[WadIdentifier["IWAD"] = 1145132873] = "IWAD";
+    WadIdentifier[WadIdentifier["PWAD"] = 1145132880] = "PWAD";
+})(WadIdentifier || (WadIdentifier = {}));
 class WadHeader {
-    identifier;
+    identifier; // u32
     numlumps;
     infotableofs;
     constructor(reader) {
-        this.identifier = reader.readU32();
+        const identifier = reader.readU32();
+        this.identifier = identifier;
         this.numlumps = reader.readU32();
         this.infotableofs = reader.readU32();
+        if (identifier != WadIdentifier.IWAD && identifier != WadIdentifier.PWAD) {
+            throw new Error(`Invalid WAD identifier ${identifier.toString(16).padStart(8, "0")}`);
+        }
     }
 }
 // https://doomwiki.org/wiki/WAD
@@ -1866,11 +1767,18 @@ class BoundingBox {
     bottom;
     left;
     right;
+    get width() { return this.right - this.left; }
+    get height() { return this.bottom - this.top; }
+    constructor(top, bottom, left, right) {
+        this.top = top;
+        this.bottom = bottom;
+        this.left = left;
+        this.right = right;
+    }
+}
+class BoundingBoxEntry extends BoundingBox {
     constructor(reader) {
-        this.top = reader.readI16();
-        this.bottom = reader.readI16();
-        this.left = reader.readI16();
-        this.right = reader.readI16();
+        super(reader.readI16(), reader.readI16(), reader.readI16(), reader.readI16());
     }
 }
 // https://doomwiki.org/wiki/Node
@@ -1888,8 +1796,8 @@ class NodeEntry {
         this.y = reader.readI16();
         this.dx = reader.readI16();
         this.dy = reader.readI16();
-        this.boundingBoxLeft = new BoundingBox(reader);
-        this.boundingBoxRight = new BoundingBox(reader);
+        this.boundingBoxLeft = new BoundingBoxEntry(reader);
+        this.boundingBoxRight = new BoundingBoxEntry(reader);
         this.rightChild = reader.readI16();
         this.leftChild = reader.readI16();
     }
@@ -1996,6 +1904,29 @@ class LinedefEntry {
     }
     static areEqual(a, b) {
         return Vertex.areEqual(a.vertexA, b.vertexA) && Vertex.areEqual(a.vertexB, b.vertexB);
+    }
+    static getBoundingBox(linedefs) {
+        let x = Number.POSITIVE_INFINITY;
+        let y = Number.POSITIVE_INFINITY;
+        let dx = Number.NEGATIVE_INFINITY;
+        let dy = Number.NEGATIVE_INFINITY;
+        for (const linedef of linedefs) {
+            x = Math.min(x, linedef.vertexA.x);
+            x = Math.min(x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y);
+            y = Math.min(y, linedef.vertexB.y);
+            dx = Math.max(dx, linedef.vertexA.x);
+            dx = Math.max(dx, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y);
+            dy = Math.max(dy, linedef.vertexB.y);
+        }
+        if (x == Number.POSITIVE_INFINITY ||
+            y == Number.POSITIVE_INFINITY ||
+            dx == Number.NEGATIVE_INFINITY ||
+            dy == Number.NEGATIVE_INFINITY) {
+            throw new Error("Invalid bounds");
+        }
+        return new BoundingBox(y, dy, x, dx);
     }
 }
 // https://doomwiki.org/wiki/Sidedef

@@ -1,3 +1,5 @@
+// Typing the numeric sizes wont enforce anything at the typing level, but it does
+// help with code clarity.
 type u8 = number;
 type u16 = number;
 type u32 = number;
@@ -98,15 +100,25 @@ class BinaryFileReader {
     }
 }
 
+enum WadIdentifier {
+    IWAD = 0x44415749, // "IWAD"
+    PWAD = 0x44415750, // "PWAD"
+}
+
 class WadHeader {
-    public readonly identifier: u32;
+    public readonly identifier: WadIdentifier; // u32
     public readonly numlumps: u32;
     public readonly infotableofs: u32;
 
     constructor(reader: BinaryFileReader) {
-        this.identifier = reader.readU32();
+        const identifier = reader.readU32();
+        this.identifier = identifier as WadIdentifier;
         this.numlumps = reader.readU32();
         this.infotableofs = reader.readU32();
+
+        if (identifier != WadIdentifier.IWAD && identifier != WadIdentifier.PWAD) {
+            throw new Error(`Invalid WAD identifier ${identifier.toString(16).padStart(8, "0")}`);
+        }
     }
 }
 
@@ -130,17 +142,33 @@ class WadFile {
     }
 }
 
-class BoundingBox {
+interface IBoundingBox {
+    readonly top: i16;
+    readonly bottom: i16;
+    readonly left: i16;
+    readonly right: i16;
+}
+
+class BoundingBox implements IBoundingBox {
     public readonly top: i16;
     public readonly bottom: i16;
     public readonly left: i16;
     public readonly right: i16;
 
+    public get width(): number { return this.right - this.left; }
+    public get height(): number { return this.bottom - this.top; }
+
+    constructor(top: number, bottom: number, left: number, right: number) {
+        this.top = top;
+        this.bottom = bottom;
+        this.left = left;
+        this.right = right;
+    }
+}
+
+class BoundingBoxEntry extends BoundingBox {
     constructor(reader: BinaryFileReader) {
-        this.top = reader.readI16();
-        this.bottom = reader.readI16();
-        this.left = reader.readI16();
-        this.right = reader.readI16();
+        super(reader.readI16(), reader.readI16(), reader.readI16(), reader.readI16());
     }
 }
 
@@ -150,8 +178,8 @@ class NodeEntry {
     public readonly y: i16;
     public readonly dx: i16;
     public readonly dy: i16;
-    public readonly boundingBoxLeft: BoundingBox;
-    public readonly boundingBoxRight: BoundingBox;
+    public readonly boundingBoxLeft: BoundingBoxEntry;
+    public readonly boundingBoxRight: BoundingBoxEntry;
     public readonly rightChild: i16;
     public readonly leftChild: i16;
 
@@ -160,8 +188,8 @@ class NodeEntry {
         this.y = reader.readI16();
         this.dx = reader.readI16();
         this.dy = reader.readI16();
-        this.boundingBoxLeft = new BoundingBox(reader);
-        this.boundingBoxRight = new BoundingBox(reader);
+        this.boundingBoxLeft = new BoundingBoxEntry(reader);
+        this.boundingBoxRight = new BoundingBoxEntry(reader);
         this.rightChild = reader.readI16();
         this.leftChild = reader.readI16();
     }
@@ -314,6 +342,34 @@ class LinedefEntry {
 
     public static areEqual(a: LinedefEntry, b: LinedefEntry): boolean {
         return Vertex.areEqual(a.vertexA, b.vertexA) && Vertex.areEqual(a.vertexB, b.vertexB);
+    }
+
+    public static getBoundingBox(linedefs: readonly LinedefEntry[]): BoundingBox {
+        let x = Number.POSITIVE_INFINITY;
+        let y = Number.POSITIVE_INFINITY;
+        let dx = Number.NEGATIVE_INFINITY;
+        let dy = Number.NEGATIVE_INFINITY;
+        for (const linedef of linedefs)
+        {
+            x = Math.min(x, linedef.vertexA.x);
+            x = Math.min(x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y);
+            y = Math.min(y, linedef.vertexB.y);
+            dx = Math.max(dx, linedef.vertexA.x);
+            dx = Math.max(dx, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y);
+            dy = Math.max(dy, linedef.vertexB.y);
+        }
+
+        if (x == Number.POSITIVE_INFINITY ||
+            y == Number.POSITIVE_INFINITY ||
+            dx == Number.NEGATIVE_INFINITY ||
+            dy == Number.NEGATIVE_INFINITY)
+        {
+            throw new Error("Invalid bounds");
+        }
+
+        return new BoundingBox(y, dy, x, dx);
     }
 }
 
