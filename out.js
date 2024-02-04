@@ -1464,15 +1464,12 @@ class UserFileInputUI {
             });
         });
         wad.then((wad) => {
-            const mapView = new MapView2D(wad);
+            const mapView = new MapView3D(wad);
             mapView.displayLevel(0);
         });
         this.draw();
     }
     draw() {
-        this.drawHelpText2d();
-    }
-    drawHelpText2d() {
         const context = this.canvas.getContext("2d");
         if (context == null)
             throw new Error("Unable to get 2d context");
@@ -1541,10 +1538,10 @@ class MapView {
 }
 class MapView2D extends MapView {
     thingHitTester;
+    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
     levelIndex = 0;
-    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     constructor(wad) {
         super(wad);
         this.thingHitTester = new HitTester(this.viewMatrix);
@@ -1615,6 +1612,8 @@ class MapView2D extends MapView {
     }
     draw() {
         const context = this.canvas.getContext("2d");
+        if (context == null)
+            throw new Error("Unable to get 2d context");
         context.setTransform(undefined);
         context.clearRect(0, 0, this.canvas.width, this.canvas.height);
         context.setTransform(this.viewMatrix);
@@ -1781,13 +1780,17 @@ class MapView3D extends MapView {
             }
             return shader;
         };
+        function assertShader(gl, shader) {
+            if (shader == null)
+                throw new Error("Unable to create shader is null");
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+                throw new Error(`Unable to compile shader ${gl.getShaderInfoLog(shader)}`);
+        }
         const shaderProgram = (() => {
             const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource);
-            if (vertexShader == null)
-                throw new Error("Unable to create vertex shader");
+            assertShader(gl, vertexShader);
             const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
-            if (fragmentShader == null)
-                throw new Error("Unable to create fragment shader");
+            assertShader(gl, fragmentShader);
             // Create the shader program
             const shaderProgram = gl.createProgram();
             if (shaderProgram == null)
@@ -1813,26 +1816,23 @@ class MapView3D extends MapView {
             verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
         }
         const vertices = new Float32Array(verticesNumber);
-        // Bind the vertex buffer
+        console.log("vertices", vertices);
         const vertexBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-        gl.clearColor(0.0, 0.0, 0.0, 1.0); // Clear to black, fully opaque
-        gl.clearDepth(1.0); // Clear everything
-        gl.enable(gl.DEPTH_TEST); // Enable depth testing
+        gl.clearColor(0.1, 1.0, 0.1, 1.0);
+        gl.clearDepth(1.0);
+        gl.enable(gl.DEPTH_TEST);
         gl.depthFunc(gl.LEQUAL); // Near things obscure far things
-        // Clear the canvas before we start drawing on it
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        // Tell WebGL to use our program when drawing
         gl.useProgram(shaderProgram);
         // Set the shader uniforms
-        const projectionMatrix = mat4.create(); // Assuming gl-matrix is available for matrix operations
+        const projectionMatrix = mat4.create();
         mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
         const modelViewMatrix = mat4.create();
         mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
-        // Set the positions of the vertices
-        const numComponents = 3; // pull out 3 values per iteration
-        const type = gl.FLOAT; // the data in
+        gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 3);
+        // gl.drawElements(gl.TRIANGLES, vertices.length / 3, gl.FLOAT, 0);
     }
     onWheel(_event) { }
     onResize(_event) { }

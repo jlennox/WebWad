@@ -40,7 +40,7 @@ class BinaryFileReader {
         this.position = position;
     }
 
-    public pushPosition(newPosition?: number): void  {
+    public pushPosition(newPosition?: number): void {
         this.storedPositions.push(this.position);
         if (newPosition !== undefined) {
             this.position = newPosition;
