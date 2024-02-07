@@ -92,7 +92,7 @@ class UserFileInputUI {
         });
 
         wad.then((wad) => {
-            const mapView = new MapView3D(wad);
+            const mapView = new MapView2D(wad);
             mapView.displayLevel(0);
         });
 
@@ -185,8 +185,8 @@ abstract class MapView {
 }
 
 class MapView2D extends MapView {
-    private readonly thingHitTester;
     private readonly viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
+    private readonly thingHitTester = new HitTester<ThingEntry>();
 
     private highlightedThingIndex: number = -1;
     private dashedStrokeOffset: number = 0;
@@ -194,8 +194,6 @@ class MapView2D extends MapView {
 
     constructor(wad: WadFile) {
         super(wad);
-
-        this.thingHitTester = new HitTester<ThingEntry>(this.viewMatrix)
 
         setInterval(() => {
             if (this.highlightedThingIndex == -1) return;
@@ -230,7 +228,7 @@ class MapView2D extends MapView {
     protected override onMouseUp(_event: MouseEvent): void {}
 
     protected override onMouseMove(event: MouseEvent): void {
-        const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
+        const hitResult = this.thingHitTester.hitTest(this.viewMatrix, event.offsetX, event.offsetY);
         const newHighlightedIndex = hitResult?.index ?? -1;
         if (this.highlightedThingIndex != newHighlightedIndex) {
             console.log(hitResult?.info, hitResult?.info?.description);
@@ -250,6 +248,7 @@ class MapView2D extends MapView {
     }
 
     protected override onDoubleClick(_event: MouseEvent): void {
+        // This is temporary test code.
         const triangles: ITriangle[] = [];
         const rects = Triangulation.getRectangles(this.currentMap);
         for (const rect of rects) {
@@ -292,7 +291,6 @@ class MapView2D extends MapView {
         }
 
         context.lineWidth = 1;
-        let i = 0;
         for (const linedef of this.currentMap.linedefs) {
             context.beginPath();
             if (linedef.hasFlag(LinedefFlags.SECRET)) {
@@ -340,9 +338,17 @@ class MapView2D extends MapView {
                 context.beginPath();
                 context.strokeStyle = "green";
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                // context.moveTo(centerX, centerY);
-                // const lineLength = thing.description.radius * this.scale * 2;
-                // context.lineTo(
+
+                // Is it directional? If so, draw a directional line.
+                const desc = thing.description;
+                if ((desc?.class & ThingsClass.Monster) == ThingsClass.Monster || desc?.sprite == ThingSprite.PLAY) {
+                    context.moveTo(centerX, centerY);
+                    const lineLength = thing.description.radius * 1.5;
+                    const radians = (thing.angle / 256) * (Math.PI * 2);
+                    const endX = centerX + Math.cos(radians) * lineLength;
+                    const endY = centerY + Math.sin(radians) * lineLength;
+                    context.lineTo(endX, endY);
+                }
                 context.stroke();
             }
         }
@@ -432,9 +438,12 @@ class MapView3D extends MapView {
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
     }
 
+    private gl: WebGLRenderingContext | null = null;
+
     protected override draw(): void {
-        const gl = this.canvas.getContext("webgl");
+        const gl = this.gl ?? this.canvas.getContext("webgl");
         if (gl === null) throw new Error("WebGL not available");
+        this.gl = gl;
 
         // Vertex shader program
         const vsSource = `
@@ -481,17 +490,14 @@ class MapView3D extends MapView {
             const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
             assertShader(gl, fragmentShader)
 
-            // Create the shader program
             const shaderProgram = gl.createProgram();
             if (shaderProgram == null) throw new Error("Unable to create shader program");
             gl.attachShader(shaderProgram, vertexShader);
             gl.attachShader(shaderProgram, fragmentShader);
             gl.linkProgram(shaderProgram);
 
-            // If creating the shader program failed, alert
             if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-                alert('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
-                return null;
+                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(shaderProgram)}`);
             }
 
             return shaderProgram;
@@ -526,22 +532,58 @@ class MapView3D extends MapView {
         gl.useProgram(shaderProgram);
 
         // Set the shader uniforms
-        const projectionMatrix = mat4.create();
-        mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
 
         const modelViewMatrix = mat4.create();
         mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
 
         gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 3);
+        // gl.drawElements(gl.TRIANGLES, vertices.length / 3, gl.UNSIGNED_INT, 0);
 
-        // gl.drawElements(gl.TRIANGLES, vertices.length / 3, gl.FLOAT, 0);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+        const projectionMatrix = mat4.create();
+        // mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
+        mat4.perspective(projectionMatrix,
+                         Math.PI / 4, // field of view in radians
+                         gl.canvas.width / gl.canvas.height, // aspect ratio
+                         0.1, // near clipping plane
+                         100); // far clipping plane
+
+
+        const viewMatrixUniformLocation = gl.getUniformLocation(shaderProgram, "uModelViewMatrix");
+        if (viewMatrixUniformLocation == null) throw new Error("Unable to get uniform location");
+        this.viewMatrixUniformLocation = viewMatrixUniformLocation;
+    }
+
+    private viewMatrixUniformLocation: WebGLUniformLocation | null = null;
+
+    private cameraPosition = { x: 0, y: 0, z: 5 }; // Initial camera position
+    private cameraRotation = { x: 0, y: 0 }; // Camera rotation, in radians
+
+    protected override onMouseMove(event: MouseEvent): void {
+        if (!this.isMouseDown) {
+            return;
+        }
+
+        const sensitivity = 0.01;
+        this.cameraRotation.y +=  event.movementX * sensitivity;
+        this.cameraRotation.x +=  event.movementY * sensitivity;
+        this.updateCamera();
+    }
+
+    private updateCamera() {
+        const viewMatrix = mat4.create();
+        mat4.rotateX(viewMatrix, viewMatrix, this.cameraRotation.x);
+        mat4.rotateY(viewMatrix, viewMatrix, this.cameraRotation.y);
+        mat4.translate(viewMatrix, viewMatrix, [-this.cameraPosition.x, -this.cameraPosition.y, -this.cameraPosition.z]);
+
+        // Set your viewMatrix uniform in your shaders to this new viewMatrix
+        this.gl!.uniformMatrix4fv(this.viewMatrixUniformLocation!, false, viewMatrix);
     }
 
     protected override onWheel(_event: WheelEvent): void {}
     protected override onResize(_event: UIEvent): void {}
     protected override onMouseDown(_event: MouseEvent): void {}
     protected override onMouseUp(_event: MouseEvent): void {}
-    protected override onMouseMove(_event: MouseEvent): void {}
     protected override onDoubleClick(_event: MouseEvent): void {}
     protected override onKeyUp(_event: KeyboardEvent): void {}
 }

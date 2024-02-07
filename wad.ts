@@ -259,10 +259,11 @@ class Vertex {
     }
 }
 
+// https://doomwiki.org/wiki/Thing
 class ThingEntry {
     public readonly x: i16;
     public readonly y: i16;
-    public readonly angle: u16;
+    public readonly angle: u16; // 0 = east, 64 = north, 128 = west, 192 = south
     public readonly type: u16 | ThingsType;
     public readonly spawnFlags: u16;
     public readonly description?: ThingDescription;
