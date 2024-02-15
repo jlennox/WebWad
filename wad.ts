@@ -101,8 +101,8 @@ class BinaryFileReader {
 }
 
 enum WadIdentifier {
-    IWAD = 0x44415749, // "IWAD"
-    PWAD = 0x44415750, // "PWAD"
+    IWAD = 0x44415749 as u32, // "IWAD"
+    PWAD = 0x44415750 as u32, // "PWAD"
 }
 
 class WadHeader {
@@ -142,14 +142,7 @@ class WadFile {
     }
 }
 
-interface IBoundingBox {
-    readonly top: i16;
-    readonly bottom: i16;
-    readonly left: i16;
-    readonly right: i16;
-}
-
-class BoundingBox implements IBoundingBox {
+class BoundingBox {
     public readonly top: i16;
     public readonly bottom: i16;
     public readonly left: i16;
@@ -350,16 +343,12 @@ class LinedefEntry {
         let y = Number.POSITIVE_INFINITY;
         let dx = Number.NEGATIVE_INFINITY;
         let dy = Number.NEGATIVE_INFINITY;
-        for (const linedef of linedefs)
-        {
-            x = Math.min(x, linedef.vertexA.x);
-            x = Math.min(x, linedef.vertexB.x);
-            y = Math.min(y, linedef.vertexA.y);
-            y = Math.min(y, linedef.vertexB.y);
-            dx = Math.max(dx, linedef.vertexA.x);
-            dx = Math.max(dx, linedef.vertexB.x);
-            dy = Math.max(dy, linedef.vertexA.y);
-            dy = Math.max(dy, linedef.vertexB.y);
+
+        for (const linedef of linedefs) {
+            x = Math.min(x, linedef.vertexA.x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y, linedef.vertexB.y);
+            dx = Math.max(dx, linedef.vertexA.x, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y, linedef.vertexB.y);
         }
 
         if (x == Number.POSITIVE_INFINITY ||
@@ -557,7 +546,11 @@ class MapEntry {
         return NodeEntry.loadAll(this.reader, this.entries.nodes);
     }
 
-    public static readAll(wadFile: WadFile, reader: BinaryFileReader, entries: readonly DirectoryEntry[]): readonly MapEntry[] {
+    public static readAll(
+        wadFile: WadFile,
+        reader: BinaryFileReader,
+        entries: readonly DirectoryEntry[]
+    ): readonly MapEntry[] {
         const maps: MapEntry[] = [];
         let i = 0;
 

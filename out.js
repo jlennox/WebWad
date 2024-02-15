@@ -1490,6 +1490,8 @@ class UserFileInput {
         });
     }
 }
+// We only ever want a single client area sized canvas, and we want it to destroy and recreate
+// because we may switch the context type.
 class GlobalCanvas {
     element;
     get width() { return this._width; }
@@ -1519,7 +1521,7 @@ class GlobalCanvas {
 }
 class UserFileInputUI {
     canvas = new GlobalCanvas(() => this.draw());
-    constructor() {
+    constructor(ctor) {
         const wad = new Promise((resolve, _reject) => {
             this.canvas.element.addEventListener("dblclick", async (_event) => {
                 try {
@@ -1543,7 +1545,7 @@ class UserFileInputUI {
             });
         });
         wad.then((wad) => {
-            const mapView = new MapView2D(wad);
+            const mapView = ctor(wad);
             mapView.displayLevel(0);
         });
         this.draw();
@@ -1587,6 +1589,7 @@ class MapView {
     canvas = new GlobalCanvas();
     isMouseDown = false;
     currentMap;
+    levelIndex = 0;
     awaitingRender = false;
     constructor(wad) {
         this.wad = wad;
@@ -1603,7 +1606,24 @@ class MapView {
         });
         this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
         this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
-        document.addEventListener("keyup", (e) => this.onKeyUp(e));
+        document.addEventListener("keyup", (e) => {
+            switch (e.key) {
+                case "-":
+                    if (this.levelIndex == 0) {
+                        this.levelIndex = this.wad.maps.length - 1;
+                    }
+                    else {
+                        --this.levelIndex;
+                    }
+                    this.displayLevel(this.levelIndex);
+                    break;
+                case "+":
+                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
+                    this.displayLevel(this.levelIndex);
+                    break;
+            }
+            this.onKeyUp(e);
+        });
     }
     redraw() {
         if (this.awaitingRender)
@@ -1620,9 +1640,9 @@ class MapView2D extends MapView {
     thingHitTester = new HitTester();
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
-    levelIndex = 0;
     constructor(wad) {
         super(wad);
+        this.resetValues();
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
                 return;
@@ -1630,6 +1650,11 @@ class MapView2D extends MapView {
             this.redraw();
         }, 40);
         this.redraw();
+    }
+    resetValues() {
+        this.highlightedThingIndex = -1;
+        this.dashedStrokeOffset = 0;
+        this.thingHitTester.startUpdate(0);
     }
     onWheel(event) {
         if (this.currentMap == null)
@@ -1677,18 +1702,7 @@ class MapView2D extends MapView {
         const stl = Triangulation.getStl(triangles);
         console.log(stl);
     }
-    onKeyUp(event) {
-        switch (event.key) {
-            case "-":
-                this.levelIndex = Math.max(this.levelIndex - 1, 0);
-                this.displayLevel(this.levelIndex);
-                break;
-            case "+":
-                this.levelIndex = this.levelIndex + 1;
-                this.displayLevel(this.levelIndex);
-                break;
-        }
-    }
+    onKeyUp(_event) { }
     draw() {
         const context = this.canvas.getContext("2d");
         if (context == null)
@@ -1721,7 +1735,7 @@ class MapView2D extends MapView {
             context.lineTo(linedef.vertexB.x, linedef.vertexB.y);
             context.stroke();
         }
-        // Not all entries are used as index values, so we must grab this while enumerating.
+        // Not all entries are used as index values, so we must grab selectedThingEntry while enumerating.
         let selectedThingEntry = null;
         let thingIndex = 0;
         this.thingHitTester.startUpdate(this.currentMap.things.length);
@@ -1747,14 +1761,16 @@ class MapView2D extends MapView {
                 context.fill();
             }
             else {
+                const desc = thing.description;
+                const isMonster = (desc.class & 8 /* ThingsClass.Monster */) == 8 /* ThingsClass.Monster */;
                 context.beginPath();
-                context.strokeStyle = "green";
+                context.strokeStyle = isMonster ? "red" : "green";
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
                 // Is it directional? If so, draw a directional line.
-                const desc = thing.description;
-                if ((desc?.class & 8 /* ThingsClass.Monster */) == 8 /* ThingsClass.Monster */ || desc?.sprite == "PLAY" /* ThingSprite.PLAY */) {
+                const isDirectional = isMonster || desc.sprite == "PLAY" /* ThingSprite.PLAY */;
+                if (isDirectional) {
                     context.moveTo(centerX, centerY);
-                    const lineLength = thing.description.radius * 1.5;
+                    const lineLength = desc.radius * 1.5;
                     const radians = (thing.angle / 256) * (Math.PI * 2);
                     const endX = centerX + Math.cos(radians) * lineLength;
                     const endY = centerY + Math.sin(radians) * lineLength;
@@ -1797,10 +1813,9 @@ class MapView2D extends MapView {
         context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
     }
     async displayLevel(index) {
-        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+        this.resetValues();
         const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
-        this.currentMap.linedefs;
         if (player1Start != undefined) {
             // Eh. Centering on the player start isn't the best, but might be improvable.
             // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
@@ -1954,7 +1969,7 @@ class MapView3D extends MapView {
     onDoubleClick(_event) { }
     onKeyUp(_event) { }
 }
-const _fileinput = new UserFileInputUI();
+const _fileinput = new UserFileInputUI((wad) => new MapView2D(wad));
 class BinaryFileReader {
     position = 0;
     u8;
@@ -2035,8 +2050,8 @@ class BinaryFileReader {
 }
 var WadIdentifier;
 (function (WadIdentifier) {
-    WadIdentifier[WadIdentifier["IWAD"] = 1145132873] = "IWAD";
-    WadIdentifier[WadIdentifier["PWAD"] = 1145132880] = "PWAD";
+    WadIdentifier[WadIdentifier["IWAD"] = 0x44415749] = "IWAD";
+    WadIdentifier[WadIdentifier["PWAD"] = 0x44415750] = "PWAD";
 })(WadIdentifier || (WadIdentifier = {}));
 class WadHeader {
     identifier; // u32
@@ -2218,14 +2233,10 @@ class LinedefEntry {
         let dx = Number.NEGATIVE_INFINITY;
         let dy = Number.NEGATIVE_INFINITY;
         for (const linedef of linedefs) {
-            x = Math.min(x, linedef.vertexA.x);
-            x = Math.min(x, linedef.vertexB.x);
-            y = Math.min(y, linedef.vertexA.y);
-            y = Math.min(y, linedef.vertexB.y);
-            dx = Math.max(dx, linedef.vertexA.x);
-            dx = Math.max(dx, linedef.vertexB.x);
-            dy = Math.max(dy, linedef.vertexA.y);
-            dy = Math.max(dy, linedef.vertexB.y);
+            x = Math.min(x, linedef.vertexA.x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y, linedef.vertexB.y);
+            dx = Math.max(dx, linedef.vertexA.x, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y, linedef.vertexB.y);
         }
         if (x == Number.POSITIVE_INFINITY ||
             y == Number.POSITIVE_INFINITY ||

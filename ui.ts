@@ -23,6 +23,8 @@ class UserFileInput {
     }
 }
 
+// We only ever want a single client area sized canvas, and we want it to destroy and recreate
+// because we may switch the context type.
 class GlobalCanvas {
     public readonly element: HTMLCanvasElement;
 
@@ -66,7 +68,7 @@ class GlobalCanvas {
 class UserFileInputUI {
     private readonly canvas: GlobalCanvas = new GlobalCanvas(() => this.draw());
 
-    constructor() {
+    constructor(ctor: (wad: WadFile) => MapView) {
         const wad = new Promise<WadFile>((resolve, _reject) => {
             this.canvas.element.addEventListener("dblclick", async (_event) => {
                 try {
@@ -92,7 +94,7 @@ class UserFileInputUI {
         });
 
         wad.then((wad) => {
-            const mapView = new MapView2D(wad);
+            const mapView = ctor(wad);
             mapView.displayLevel(0);
         });
 
@@ -142,6 +144,7 @@ abstract class MapView {
     protected isMouseDown: boolean = false;
     protected currentMap: MapEntry;
 
+    private levelIndex: number = 0;
     private awaitingRender: boolean = false;
 
     constructor(protected readonly wad: WadFile) {
@@ -159,7 +162,25 @@ abstract class MapView {
         });
         this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
         this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
-        document.addEventListener("keyup", (e) => this.onKeyUp(e));
+        document.addEventListener("keyup", (e) => {
+            switch (e.key) {
+                case "-":
+                    if (this.levelIndex == 0) {
+                        this.levelIndex = this.wad.maps.length - 1;
+                    } else {
+                        --this.levelIndex;
+                    }
+
+                    this.displayLevel(this.levelIndex);
+                    break;
+                case "+":
+                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
+                    this.displayLevel(this.levelIndex);
+                    break;
+            }
+
+            this.onKeyUp(e);
+        });
     }
 
     protected redraw(): void {
@@ -190,10 +211,10 @@ class MapView2D extends MapView {
 
     private highlightedThingIndex: number = -1;
     private dashedStrokeOffset: number = 0;
-    private levelIndex: number = 0;
 
     constructor(wad: WadFile) {
         super(wad);
+        this.resetValues();
 
         setInterval(() => {
             if (this.highlightedThingIndex == -1) return;
@@ -202,6 +223,12 @@ class MapView2D extends MapView {
         }, 40);
 
         this.redraw();
+    }
+
+    private resetValues(): void {
+        this.highlightedThingIndex = -1;
+        this.dashedStrokeOffset = 0;
+        this.thingHitTester.startUpdate(0);
     }
 
     protected override onWheel(event: WheelEvent): void {
@@ -258,18 +285,7 @@ class MapView2D extends MapView {
         console.log(stl);
     }
 
-    protected override onKeyUp(event: KeyboardEvent): void {
-        switch (event.key) {
-            case "-":
-                this.levelIndex = Math.max(this.levelIndex - 1, 0);
-                this.displayLevel(this.levelIndex);
-                break;
-            case "+":
-                this.levelIndex = this.levelIndex + 1;
-                this.displayLevel(this.levelIndex);
-                break;
-        }
-    }
+    protected override onKeyUp(_event: KeyboardEvent): void {}
 
     protected override draw(): void {
         const context = this.canvas.getContext("2d");
@@ -306,7 +322,7 @@ class MapView2D extends MapView {
             context.stroke();
         }
 
-        // Not all entries are used as index values, so we must grab this while enumerating.
+        // Not all entries are used as index values, so we must grab selectedThingEntry while enumerating.
         let selectedThingEntry: ThingEntry | null = null;
         let thingIndex = 0;
         this.thingHitTester.startUpdate(this.currentMap.things.length);
@@ -335,15 +351,17 @@ class MapView2D extends MapView {
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
                 context.fill();
             } else {
+                const desc = thing.description;
+                const isMonster = (desc.class & ThingsClass.Monster) == ThingsClass.Monster;
                 context.beginPath();
-                context.strokeStyle = "green";
+                context.strokeStyle = isMonster ? "red" : "green";
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
 
                 // Is it directional? If so, draw a directional line.
-                const desc = thing.description;
-                if ((desc?.class & ThingsClass.Monster) == ThingsClass.Monster || desc?.sprite == ThingSprite.PLAY) {
+                const isDirectional = isMonster || desc.sprite == ThingSprite.PLAY;
+                if (isDirectional) {
                     context.moveTo(centerX, centerY);
-                    const lineLength = thing.description.radius * 1.5;
+                    const lineLength = desc.radius * 1.5;
                     const radians = (thing.angle / 256) * (Math.PI * 2);
                     const endX = centerX + Math.cos(radians) * lineLength;
                     const endY = centerY + Math.sin(radians) * lineLength;
@@ -394,10 +412,10 @@ class MapView2D extends MapView {
     }
 
     public override async displayLevel(index: number): Promise<void> {
-        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+        this.resetValues();
+
         const player1Start = this.currentMap.things.find((t) => t.type == ThingsType.PlayerOneStart);
-        this.currentMap.linedefs
         if (player1Start != undefined) {
             // Eh. Centering on the player start isn't the best, but might be improvable.
             // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
@@ -543,10 +561,10 @@ class MapView3D extends MapView {
         const projectionMatrix = mat4.create();
         // mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
         mat4.perspective(projectionMatrix,
-                         Math.PI / 4, // field of view in radians
-                         gl.canvas.width / gl.canvas.height, // aspect ratio
-                         0.1, // near clipping plane
-                         100); // far clipping plane
+            Math.PI / 4, // field of view in radians
+            gl.canvas.width / gl.canvas.height, // aspect ratio
+            0.1, // near clipping plane
+            100); // far clipping plane
 
 
         const viewMatrixUniformLocation = gl.getUniformLocation(shaderProgram, "uModelViewMatrix");
@@ -588,4 +606,4 @@ class MapView3D extends MapView {
     protected override onKeyUp(_event: KeyboardEvent): void {}
 }
 
-const _fileinput = new UserFileInputUI();
+const _fileinput = new UserFileInputUI((wad) => new MapView2D(wad));
