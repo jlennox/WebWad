@@ -12,8 +12,7 @@ class HitTester<TInfo> {
     private infos: TInfo[] = [];
     private count: number = 0;
 
-    constructor(private readonly matrix: DOMMatrix) {
-    }
+    constructor() {}
 
     public startUpdate(count: number): void {
         if (this.count < count) {
@@ -38,14 +37,14 @@ class HitTester<TInfo> {
         ++this.index;
     }
 
-    public hitTest(x: i16, y: i16): {
+    public hitTest(matrix: DOMMatrix, x: i16, y: i16): {
         info: TInfo,
         index: number
     } | null {
         const points = this.points;
         if (points == null) return null;
 
-        const translated = new DOMPoint(x, y).matrixTransform(this.matrix.inverse());
+        const translated = new DOMPoint(x, y).matrixTransform(matrix.inverse());
 
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {

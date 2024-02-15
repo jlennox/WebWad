@@ -1,14 +1,11 @@
 "use strict";
 class HitTester {
-    matrix;
     // Storing in Int16Array to (hopefully...) improve memory locality and speed.
     points = null;
     index = 0;
     infos = [];
     count = 0;
-    constructor(matrix) {
-        this.matrix = matrix;
-    }
+    constructor() { }
     startUpdate(count) {
         if (this.count < count) {
             this.points = new Int16Array(count * 3 /* PointIndex.NumberOfEntries */);
@@ -27,11 +24,11 @@ class HitTester {
         this.infos[this.index] = info;
         ++this.index;
     }
-    hitTest(x, y) {
+    hitTest(matrix, x, y) {
         const points = this.points;
         if (points == null)
             return null;
-        const translated = new DOMPoint(x, y).matrixTransform(this.matrix.inverse());
+        const translated = new DOMPoint(x, y).matrixTransform(matrix.inverse());
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {
             const pointX = points[pointIndex + 0 /* PointIndex.x */];
@@ -51,6 +48,133 @@ class HitTester {
         return null;
     }
 }
+class Matrix {
+    static vectexMultiply(m, v) {
+        return {
+            x: m.a * v.x + m.c * v.y + m.e,
+            y: m.b * v.x + m.d * v.y + m.f
+        };
+    }
+}
+class Triangulation {
+    // Rectangles are a compromise because floors require triangles.
+    // This exists for experimental types of rendering that require rectangles.
+    static getRectangles(map) {
+        let rectangles = [];
+        for (const linedef of map.linedefs) {
+            const a = linedef.vertexA;
+            const b = linedef.vertexB;
+            const sectora = linedef.sidedefLeft?.sector;
+            const sectorb = linedef.sidedefRight?.sector;
+            const floora = sectora?.floorHeight ?? 0;
+            const floorb = sectorb?.floorHeight ?? 0;
+            const ceilinga = sectora?.ceilingHeight ?? 0;
+            const ceilingb = sectorb?.ceilingHeight ?? 0;
+            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
+            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
+            const bl = { x: a.x, y: a.y, z: floora };
+            const br = { x: a.x, y: a.y, z: ceilinga };
+            const tl = { x: b.x, y: b.y, z: floorb };
+            const tr = { x: b.x, y: b.y, z: ceilingb };
+            rectangles.push({
+                x: bl,
+                y: bl,
+                x2: tl,
+                y2: tl
+            });
+            rectangles.push({
+                x: br,
+                y: br,
+                x2: tr,
+                y2: tr
+            });
+        }
+        for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
+            const vertices = [];
+            const usedVertixes = new Set();
+            for (const linedef of linedefs) {
+                for (const vertex of [linedef.vertexA, linedef.vertexB]) {
+                    const vertexValue = (vertex.x << 16) | vertex.y;
+                    if (!usedVertixes.has(vertexValue)) {
+                        usedVertixes.add(vertexValue);
+                        vertices.push(vertex);
+                    }
+                }
+            }
+            const sector = map.sectors[parseInt(sectorIndex)];
+            const floorHeight = sector.floorHeight;
+            let x = Number.POSITIVE_INFINITY;
+            let y = Number.POSITIVE_INFINITY;
+            let dx = Number.NEGATIVE_INFINITY;
+            let dy = Number.NEGATIVE_INFINITY;
+            for (const linedef of linedefs) {
+                x = Math.min(x, linedef.vertexA.x);
+                x = Math.min(x, linedef.vertexB.x);
+                y = Math.min(y, linedef.vertexA.y);
+                y = Math.min(y, linedef.vertexB.y);
+                dx = Math.max(dx, linedef.vertexA.x);
+                dx = Math.max(dx, linedef.vertexB.x);
+                dy = Math.max(dy, linedef.vertexA.y);
+                dy = Math.max(dy, linedef.vertexB.y);
+            }
+            if (x == Number.POSITIVE_INFINITY ||
+                y == Number.POSITIVE_INFINITY ||
+                dx == Number.NEGATIVE_INFINITY ||
+                dy == Number.NEGATIVE_INFINITY) {
+                continue;
+            }
+            // Triangulation.rectToTriangleHorizontal(triangles, x, y, dx, dy, floorHeight);
+            rectangles.push({
+                x: { x: x, y: y, z: floorHeight },
+                y: { x: x, y: dy, z: floorHeight },
+                x2: { x: dx, y: y, z: floorHeight },
+                y2: { x: dx, y: dy, z: floorHeight }
+            });
+        }
+        return rectangles;
+    }
+    static rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
+        const bl = { x: x, y: y, z: z };
+        const tl = { x: x, y: y2, z: z };
+        const br = { x: x2, y: y, z: z };
+        const tr = { x: x2, y: y2, z: z };
+        triangles.push({ v1: bl, v2: tl, v3: br });
+        triangles.push({ v1: tr, v2: tl, v3: br });
+    }
+    static rectToTriangleVertical(triangles, x, y, x2, y2, z, z2) {
+        const bl = { x: x, y: y, z: z };
+        const br = { x: x, y: y, z: z2 };
+        const tl = { x: x2, y: y2, z: z };
+        const tr = { x: x2, y: y2, z: z2 };
+        triangles.push({ v1: br, v2: bl, v3: tr });
+        triangles.push({ v1: bl, v2: tl, v3: tr });
+    }
+    static rectToTriangle(triangles, rect) {
+        if (rect.x.z == rect.x2.z) {
+            Triangulation.rectToTriangleHorizontal(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.y2.y, rect.x.z);
+        }
+        else {
+            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.x2.z);
+        }
+    }
+    static getStl(triangles) {
+        let stlString = "solid doom_map\n";
+        for (let triangle of triangles) {
+            const v1 = triangle.v1;
+            const v2 = triangle.v2;
+            const v3 = triangle.v3;
+            stlString += `facet normal 0 0 0\n`;
+            stlString += `    outer loop\n`;
+            stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
+            stlString += `        vertex ${v2.x} ${v2.y} ${v2.z}\n`;
+            stlString += `        vertex ${v3.x} ${v3.y} ${v3.z}\n`;
+            stlString += `    endloop\n`;
+            stlString += `endfacet\n`;
+        }
+        stlString += "endsolid doom_map\n";
+        return stlString;
+    }
+}
 class Things {
     static descriptions = {
         1: {
@@ -59,7 +183,7 @@ class Things {
             "height": 56,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Player 1 start"
         },
         2: {
@@ -68,7 +192,7 @@ class Things {
             "height": 56,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Player 2 start"
         },
         3: {
@@ -77,7 +201,7 @@ class Things {
             "height": 56,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Player 3 start"
         },
         4: {
@@ -86,7 +210,7 @@ class Things {
             "height": 56,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "A+",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Player 4 start"
         },
         5: {
@@ -95,7 +219,7 @@ class Things {
             "height": 16,
             "sprite": "BKEY" /* ThingSprite.BKEY */,
             "sequence": "AB",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Blue keycard"
         },
         6: {
@@ -104,7 +228,7 @@ class Things {
             "height": 16,
             "sprite": "YKEY" /* ThingSprite.YKEY */,
             "sequence": "AB",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Yellow keycard"
         },
         7: {
@@ -113,7 +237,7 @@ class Things {
             "height": 100,
             "sprite": "SPID" /* ThingSprite.SPID */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Spiderdemon"
         },
         8: {
@@ -122,7 +246,7 @@ class Things {
             "height": 16,
             "sprite": "BPAK" /* ThingSprite.BPAK */,
             "sequence": "A",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Backpack"
         },
         9: {
@@ -131,7 +255,7 @@ class Things {
             "height": 56,
             "sprite": "SPOS" /* ThingSprite.SPOS */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Shotgun guy"
         },
         10: {
@@ -140,16 +264,16 @@ class Things {
             "height": 16,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "W",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Bloody mess"
         },
         11: {
             "version": "S",
-            "radius": 16,
+            "radius": 20,
             "height": 56,
             "sprite": "none" /* ThingSprite.none */,
             "sequence": "-",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Deathmatch start"
         },
         12: {
@@ -158,7 +282,7 @@ class Things {
             "height": 16,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "W",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Bloody mess 2"
         },
         13: {
@@ -167,7 +291,7 @@ class Things {
             "height": 16,
             "sprite": "RKEY" /* ThingSprite.RKEY */,
             "sequence": "AB",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Red keycard"
         },
         14: {
@@ -176,7 +300,7 @@ class Things {
             "height": 16,
             "sprite": "none4" /* ThingSprite.none4 */,
             "sequence": "-",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Teleport landing"
         },
         15: {
@@ -185,7 +309,7 @@ class Things {
             "height": 16,
             "sprite": "PLAY" /* ThingSprite.PLAY */,
             "sequence": "N",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead player"
         },
         16: {
@@ -194,7 +318,7 @@ class Things {
             "height": 110,
             "sprite": "CYBR" /* ThingSprite.CYBR */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Cyberdemon"
         },
         17: {
@@ -203,7 +327,7 @@ class Things {
             "height": 16,
             "sprite": "CELP" /* ThingSprite.CELP */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Energy cell pack"
         },
         18: {
@@ -212,7 +336,7 @@ class Things {
             "height": 16,
             "sprite": "POSS" /* ThingSprite.POSS */,
             "sequence": "L",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead former human"
         },
         19: {
@@ -221,7 +345,7 @@ class Things {
             "height": 16,
             "sprite": "SPOS" /* ThingSprite.SPOS */,
             "sequence": "L",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead former sergeant"
         },
         20: {
@@ -230,7 +354,7 @@ class Things {
             "height": 16,
             "sprite": "TROO" /* ThingSprite.TROO */,
             "sequence": "M",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead imp"
         },
         21: {
@@ -239,7 +363,7 @@ class Things {
             "height": 16,
             "sprite": "SARG" /* ThingSprite.SARG */,
             "sequence": "N",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead demon"
         },
         22: {
@@ -248,7 +372,7 @@ class Things {
             "height": 16,
             "sprite": "HEAD" /* ThingSprite.HEAD */,
             "sequence": "L",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead cacodemon"
         },
         23: {
@@ -257,7 +381,7 @@ class Things {
             "height": 16,
             "sprite": "SKUL" /* ThingSprite.SKUL */,
             "sequence": "K",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Dead lost soul (invisible)"
         },
         24: {
@@ -266,7 +390,7 @@ class Things {
             "height": 16,
             "sprite": "POL5" /* ThingSprite.POL5 */,
             "sequence": "A",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Pool of blood and flesh"
         },
         25: {
@@ -275,7 +399,7 @@ class Things {
             "height": 16,
             "sprite": "POL1" /* ThingSprite.POL1 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Impaled human"
         },
         26: {
@@ -284,7 +408,7 @@ class Things {
             "height": 16,
             "sprite": "POL6" /* ThingSprite.POL6 */,
             "sequence": "AB",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Twitching impaled human"
         },
         27: {
@@ -293,7 +417,7 @@ class Things {
             "height": 16,
             "sprite": "POL4" /* ThingSprite.POL4 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Skull on a pole"
         },
         28: {
@@ -302,7 +426,7 @@ class Things {
             "height": 16,
             "sprite": "POL2" /* ThingSprite.POL2 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Five skulls \"shish kebab\""
         },
         29: {
@@ -311,7 +435,7 @@ class Things {
             "height": 16,
             "sprite": "POL3" /* ThingSprite.POL3 */,
             "sequence": "AB",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Pile of skulls and candles"
         },
         30: {
@@ -320,7 +444,7 @@ class Things {
             "height": 16,
             "sprite": "COL1" /* ThingSprite.COL1 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall green pillar"
         },
         31: {
@@ -329,7 +453,7 @@ class Things {
             "height": 16,
             "sprite": "COL2" /* ThingSprite.COL2 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short green pillar"
         },
         32: {
@@ -338,7 +462,7 @@ class Things {
             "height": 16,
             "sprite": "COL3" /* ThingSprite.COL3 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall red pillar"
         },
         33: {
@@ -347,7 +471,7 @@ class Things {
             "height": 16,
             "sprite": "COL4" /* ThingSprite.COL4 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short red pillar"
         },
         34: {
@@ -356,7 +480,7 @@ class Things {
             "height": 16,
             "sprite": "CAND" /* ThingSprite.CAND */,
             "sequence": "A",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Candle"
         },
         35: {
@@ -365,7 +489,7 @@ class Things {
             "height": 16,
             "sprite": "CBRA" /* ThingSprite.CBRA */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Candelabra"
         },
         36: {
@@ -374,7 +498,7 @@ class Things {
             "height": 16,
             "sprite": "COL5" /* ThingSprite.COL5 */,
             "sequence": "AB",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short green pillar with beating heart"
         },
         37: {
@@ -383,7 +507,7 @@ class Things {
             "height": 16,
             "sprite": "COL6" /* ThingSprite.COL6 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short red pillar with skull"
         },
         38: {
@@ -392,7 +516,7 @@ class Things {
             "height": 16,
             "sprite": "RSKU" /* ThingSprite.RSKU */,
             "sequence": "AB",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Red skull key"
         },
         39: {
@@ -401,7 +525,7 @@ class Things {
             "height": 16,
             "sprite": "YSKU" /* ThingSprite.YSKU */,
             "sequence": "AB",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Yellow skull key"
         },
         40: {
@@ -410,7 +534,7 @@ class Things {
             "height": 16,
             "sprite": "BSKU" /* ThingSprite.BSKU */,
             "sequence": "AB",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Blue skull key"
         },
         41: {
@@ -419,7 +543,7 @@ class Things {
             "height": 16,
             "sprite": "CEYE" /* ThingSprite.CEYE */,
             "sequence": "ABCB",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Evil eye"
         },
         42: {
@@ -428,7 +552,7 @@ class Things {
             "height": 16,
             "sprite": "FSKU" /* ThingSprite.FSKU */,
             "sequence": "ABC",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Floating skull"
         },
         43: {
@@ -437,7 +561,7 @@ class Things {
             "height": 16,
             "sprite": "TRE1" /* ThingSprite.TRE1 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Burnt tree"
         },
         44: {
@@ -446,7 +570,7 @@ class Things {
             "height": 16,
             "sprite": "TBLU" /* ThingSprite.TBLU */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall blue firestick"
         },
         45: {
@@ -455,7 +579,7 @@ class Things {
             "height": 16,
             "sprite": "TGRN" /* ThingSprite.TGRN */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall green firestick"
         },
         46: {
@@ -464,7 +588,7 @@ class Things {
             "height": 16,
             "sprite": "TRED" /* ThingSprite.TRED */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall red firestick"
         },
         47: {
@@ -473,7 +597,7 @@ class Things {
             "height": 16,
             "sprite": "SMIT" /* ThingSprite.SMIT */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Brown stump"
         },
         48: {
@@ -482,7 +606,7 @@ class Things {
             "height": 16,
             "sprite": "ELEC" /* ThingSprite.ELEC */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall techno column"
         },
         49: {
@@ -491,7 +615,7 @@ class Things {
             "height": 68,
             "sprite": "GOR1" /* ThingSprite.GOR1 */,
             "sequence": "ABCB",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, twitching"
         },
         50: {
@@ -500,7 +624,7 @@ class Things {
             "height": 84,
             "sprite": "GOR2" /* ThingSprite.GOR2 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, arms out"
         },
         51: {
@@ -509,7 +633,7 @@ class Things {
             "height": 84,
             "sprite": "GOR3" /* ThingSprite.GOR3 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, one-legged"
         },
         52: {
@@ -518,7 +642,7 @@ class Things {
             "height": 68,
             "sprite": "GOR4" /* ThingSprite.GOR4 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging pair of legs"
         },
         53: {
@@ -527,7 +651,7 @@ class Things {
             "height": 52,
             "sprite": "GOR5" /* ThingSprite.GOR5 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging leg"
         },
         54: {
@@ -536,7 +660,7 @@ class Things {
             "height": 16,
             "sprite": "TRE2" /* ThingSprite.TRE2 */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Large brown tree"
         },
         55: {
@@ -545,7 +669,7 @@ class Things {
             "height": 16,
             "sprite": "SMBT" /* ThingSprite.SMBT */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short blue firestick"
         },
         56: {
@@ -554,7 +678,7 @@ class Things {
             "height": 16,
             "sprite": "SMGT" /* ThingSprite.SMGT */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short green firestick"
         },
         57: {
@@ -563,7 +687,7 @@ class Things {
             "height": 16,
             "sprite": "SMRT" /* ThingSprite.SMRT */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short red firestick"
         },
         58: {
@@ -572,7 +696,7 @@ class Things {
             "height": 56,
             "sprite": "SARG" /* ThingSprite.SARG */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Spectre"
         },
         59: {
@@ -581,7 +705,7 @@ class Things {
             "height": 84,
             "sprite": "GOR2" /* ThingSprite.GOR2 */,
             "sequence": "A",
-            "class": "^",
+            "class": 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, arms out"
         },
         60: {
@@ -590,7 +714,7 @@ class Things {
             "height": 68,
             "sprite": "GOR4" /* ThingSprite.GOR4 */,
             "sequence": "A",
-            "class": "^",
+            "class": 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging pair of legs"
         },
         61: {
@@ -599,7 +723,7 @@ class Things {
             "height": 52,
             "sprite": "GOR3" /* ThingSprite.GOR3 */,
             "sequence": "A",
-            "class": "^",
+            "class": 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, one-legged"
         },
         62: {
@@ -608,7 +732,7 @@ class Things {
             "height": 52,
             "sprite": "GOR5" /* ThingSprite.GOR5 */,
             "sequence": "A",
-            "class": "^",
+            "class": 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging leg"
         },
         63: {
@@ -617,7 +741,7 @@ class Things {
             "height": 68,
             "sprite": "GOR1" /* ThingSprite.GOR1 */,
             "sequence": "ABCB",
-            "class": "^",
+            "class": 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, twitching"
         },
         64: {
@@ -626,7 +750,7 @@ class Things {
             "height": 56,
             "sprite": "VILE" /* ThingSprite.VILE */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Arch-vile"
         },
         65: {
@@ -635,7 +759,7 @@ class Things {
             "height": 56,
             "sprite": "CPOS" /* ThingSprite.CPOS */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Heavy weapon dude"
         },
         66: {
@@ -644,7 +768,7 @@ class Things {
             "height": 56,
             "sprite": "SKEL" /* ThingSprite.SKEL */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Revenant"
         },
         67: {
@@ -653,7 +777,7 @@ class Things {
             "height": 64,
             "sprite": "FATT" /* ThingSprite.FATT */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Mancubus"
         },
         68: {
@@ -662,7 +786,7 @@ class Things {
             "height": 64,
             "sprite": "BSPI" /* ThingSprite.BSPI */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Arachnotron"
         },
         69: {
@@ -671,7 +795,7 @@ class Things {
             "height": 64,
             "sprite": "BOS2" /* ThingSprite.BOS2 */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Hell knight"
         },
         70: {
@@ -680,7 +804,7 @@ class Things {
             "height": 16,
             "sprite": "FCAN" /* ThingSprite.FCAN */,
             "sequence": "ABC",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Burning barrel"
         },
         71: {
@@ -689,7 +813,7 @@ class Things {
             "height": 56,
             "sprite": "PAIN" /* ThingSprite.PAIN */,
             "sequence": "A+",
-            "class": "MO*^",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Pain elemental"
         },
         72: {
@@ -698,7 +822,7 @@ class Things {
             "height": 72,
             "sprite": "KEEN" /* ThingSprite.KEEN */,
             "sequence": "A+",
-            "class": "MO*^",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Commander Keen"
         },
         73: {
@@ -707,7 +831,7 @@ class Things {
             "height": 88,
             "sprite": "HDB1" /* ThingSprite.HDB1 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, guts removed"
         },
         74: {
@@ -716,7 +840,7 @@ class Things {
             "height": 88,
             "sprite": "HDB2" /* ThingSprite.HDB2 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging victim, guts and brain removed"
         },
         75: {
@@ -725,7 +849,7 @@ class Things {
             "height": 64,
             "sprite": "HDB3" /* ThingSprite.HDB3 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging torso, looking down"
         },
         76: {
@@ -734,7 +858,7 @@ class Things {
             "height": 64,
             "sprite": "HDB4" /* ThingSprite.HDB4 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging torso, open skull"
         },
         77: {
@@ -743,7 +867,7 @@ class Things {
             "height": 64,
             "sprite": "HDB5" /* ThingSprite.HDB5 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging torso, looking up"
         },
         78: {
@@ -752,7 +876,7 @@ class Things {
             "height": 64,
             "sprite": "HDB6" /* ThingSprite.HDB6 */,
             "sequence": "A",
-            "class": "O^",
+            "class": 16 /* ThingsClass.Obstacle */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Hanging torso, brain removed"
         },
         79: {
@@ -761,7 +885,7 @@ class Things {
             "height": 16,
             "sprite": "POB1" /* ThingSprite.POB1 */,
             "sequence": "A",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Pool of blood"
         },
         80: {
@@ -770,7 +894,7 @@ class Things {
             "height": 16,
             "sprite": "POB2" /* ThingSprite.POB2 */,
             "sequence": "A",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Pool of blood"
         },
         81: {
@@ -779,7 +903,7 @@ class Things {
             "height": 16,
             "sprite": "BRS1" /* ThingSprite.BRS1 */,
             "sequence": "A",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Pool of brains"
         },
         82: {
@@ -788,7 +912,7 @@ class Things {
             "height": 16,
             "sprite": "SGN2" /* ThingSprite.SGN2 */,
             "sequence": "A",
-            "class": "WP1",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "Super shotgun"
         },
         83: {
@@ -797,7 +921,7 @@ class Things {
             "height": 16,
             "sprite": "MEGA" /* ThingSprite.MEGA */,
             "sequence": "ABCD",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Megasphere"
         },
         84: {
@@ -806,7 +930,7 @@ class Things {
             "height": 56,
             "sprite": "SSWV" /* ThingSprite.SSWV */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Wolfenstein SS"
         },
         85: {
@@ -815,7 +939,7 @@ class Things {
             "height": 16,
             "sprite": "TLMP" /* ThingSprite.TLMP */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Tall techno floor lamp"
         },
         86: {
@@ -824,7 +948,7 @@ class Things {
             "height": 16,
             "sprite": "TLP2" /* ThingSprite.TLP2 */,
             "sequence": "ABCD",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Short techno floor lamp"
         },
         87: {
@@ -833,7 +957,7 @@ class Things {
             "height": 32,
             "sprite": "none3" /* ThingSprite.none3 */,
             "sequence": "-",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Spawn spot"
         },
         88: {
@@ -842,7 +966,7 @@ class Things {
             "height": 16,
             "sprite": "BBRN" /* ThingSprite.BBRN */,
             "sequence": "A+",
-            "class": "O2*",
+            "class": 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Romero's head"
         },
         89: {
@@ -851,7 +975,7 @@ class Things {
             "height": 32,
             "sprite": "none1" /* ThingSprite.none1 */,
             "sequence": "-",
-            "class": "",
+            "class": 0 /* ThingsClass.None */,
             "description": "Monster spawner"
         },
         2001: {
@@ -860,7 +984,7 @@ class Things {
             "height": 16,
             "sprite": "SHOT" /* ThingSprite.SHOT */,
             "sequence": "A",
-            "class": "WP1",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "Shotgun"
         },
         2002: {
@@ -869,7 +993,7 @@ class Things {
             "height": 16,
             "sprite": "MGUN" /* ThingSprite.MGUN */,
             "sequence": "A",
-            "class": "WP1",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "Chaingun"
         },
         2003: {
@@ -878,7 +1002,7 @@ class Things {
             "height": 16,
             "sprite": "LAUN" /* ThingSprite.LAUN */,
             "sequence": "A",
-            "class": "WP1",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "Rocket launcher"
         },
         2004: {
@@ -887,7 +1011,7 @@ class Things {
             "height": 16,
             "sprite": "PLAS" /* ThingSprite.PLAS */,
             "sequence": "A",
-            "class": "WP1",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "Plasma gun"
         },
         2005: {
@@ -896,7 +1020,7 @@ class Things {
             "height": 16,
             "sprite": "CSAW" /* ThingSprite.CSAW */,
             "sequence": "A",
-            "class": "WP2",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "Chainsaw"
         },
         2006: {
@@ -905,7 +1029,7 @@ class Things {
             "height": 16,
             "sprite": "BFUG" /* ThingSprite.BFUG */,
             "sequence": "A",
-            "class": "WP1",
+            "class": 4 /* ThingsClass.Weapon */ | 2 /* ThingsClass.Pickup */,
             "description": "BFG9000"
         },
         2007: {
@@ -914,7 +1038,7 @@ class Things {
             "height": 16,
             "sprite": "CLIP" /* ThingSprite.CLIP */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Clip"
         },
         2008: {
@@ -923,7 +1047,7 @@ class Things {
             "height": 16,
             "sprite": "SHEL" /* ThingSprite.SHEL */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "4 shotgun shells"
         },
         2010: {
@@ -932,7 +1056,7 @@ class Things {
             "height": 16,
             "sprite": "ROCK" /* ThingSprite.ROCK */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Rocket"
         },
         2011: {
@@ -941,7 +1065,7 @@ class Things {
             "height": 16,
             "sprite": "STIM" /* ThingSprite.STIM */,
             "sequence": "A",
-            "class": "P3",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Stimpack"
         },
         2012: {
@@ -950,7 +1074,7 @@ class Things {
             "height": 16,
             "sprite": "MEDI" /* ThingSprite.MEDI */,
             "sequence": "A",
-            "class": "P3",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Medikit"
         },
         2013: {
@@ -959,7 +1083,7 @@ class Things {
             "height": 16,
             "sprite": "SOUL" /* ThingSprite.SOUL */,
             "sequence": "ABCDCB",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Supercharge"
         },
         2014: {
@@ -968,7 +1092,7 @@ class Things {
             "height": 16,
             "sprite": "BON1" /* ThingSprite.BON1 */,
             "sequence": "ABCDCB",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Health bonus"
         },
         2015: {
@@ -977,7 +1101,7 @@ class Things {
             "height": 16,
             "sprite": "BON2" /* ThingSprite.BON2 */,
             "sequence": "ABCDCB",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Armor bonus"
         },
         2018: {
@@ -986,7 +1110,7 @@ class Things {
             "height": 16,
             "sprite": "ARM1" /* ThingSprite.ARM1 */,
             "sequence": "AB",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Armor"
         },
         2019: {
@@ -995,7 +1119,7 @@ class Things {
             "height": 16,
             "sprite": "ARM2" /* ThingSprite.ARM2 */,
             "sequence": "AB",
-            "class": "P2",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Megaarmor"
         },
         2022: {
@@ -1004,7 +1128,7 @@ class Things {
             "height": 16,
             "sprite": "PINV" /* ThingSprite.PINV */,
             "sequence": "ABCD",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Invulnerability"
         },
         2023: {
@@ -1013,7 +1137,7 @@ class Things {
             "height": 16,
             "sprite": "PSTR" /* ThingSprite.PSTR */,
             "sequence": "A",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Berserk"
         },
         2024: {
@@ -1022,7 +1146,7 @@ class Things {
             "height": 16,
             "sprite": "PINS" /* ThingSprite.PINS */,
             "sequence": "ABCD",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Partial invisibility"
         },
         2025: {
@@ -1031,7 +1155,7 @@ class Things {
             "height": 16,
             "sprite": "SUIT" /* ThingSprite.SUIT */,
             "sequence": "A",
-            "class": "P",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Radiation shielding suit"
         },
         2026: {
@@ -1040,7 +1164,7 @@ class Things {
             "height": 16,
             "sprite": "PMAP" /* ThingSprite.PMAP */,
             "sequence": "ABCDCB",
-            "class": "AP1",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Computer area map"
         },
         2028: {
@@ -1049,7 +1173,7 @@ class Things {
             "height": 16,
             "sprite": "COLU" /* ThingSprite.COLU */,
             "sequence": "A",
-            "class": "O",
+            "class": 16 /* ThingsClass.Obstacle */,
             "description": "Floor lamp"
         },
         2035: {
@@ -1058,7 +1182,7 @@ class Things {
             "height": 42,
             "sprite": "BAR1" /* ThingSprite.BAR1 */,
             "sequence": "AB",
-            "class": "O*",
+            "class": 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Exploding barrel"
         },
         2045: {
@@ -1067,7 +1191,7 @@ class Things {
             "height": 16,
             "sprite": "PVIS" /* ThingSprite.PVIS */,
             "sequence": "AB",
-            "class": "AP",
+            "class": 1 /* ThingsClass.ArtifactItem */ | 2 /* ThingsClass.Pickup */,
             "description": "Light amplification visor"
         },
         2046: {
@@ -1076,7 +1200,7 @@ class Things {
             "height": 16,
             "sprite": "BROK" /* ThingSprite.BROK */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Box of rockets"
         },
         2047: {
@@ -1085,7 +1209,7 @@ class Things {
             "height": 16,
             "sprite": "CELL" /* ThingSprite.CELL */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Energy cell"
         },
         2048: {
@@ -1094,7 +1218,7 @@ class Things {
             "height": 16,
             "sprite": "AMMO" /* ThingSprite.AMMO */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Box of bullets"
         },
         2049: {
@@ -1103,7 +1227,7 @@ class Things {
             "height": 16,
             "sprite": "SBOX" /* ThingSprite.SBOX */,
             "sequence": "A",
-            "class": "P1",
+            "class": 2 /* ThingsClass.Pickup */,
             "description": "Box of shotgun shells"
         },
         3001: {
@@ -1112,7 +1236,7 @@ class Things {
             "height": 56,
             "sprite": "TROO" /* ThingSprite.TROO */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Imp"
         },
         3002: {
@@ -1121,7 +1245,7 @@ class Things {
             "height": 56,
             "sprite": "SARG" /* ThingSprite.SARG */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Demon"
         },
         3003: {
@@ -1130,7 +1254,7 @@ class Things {
             "height": 64,
             "sprite": "BOSS" /* ThingSprite.BOSS */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Baron of Hell"
         },
         3004: {
@@ -1139,7 +1263,7 @@ class Things {
             "height": 56,
             "sprite": "POSS" /* ThingSprite.POSS */,
             "sequence": "AB+",
-            "class": "MO*",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */,
             "description": "Zombieman"
         },
         3005: {
@@ -1148,7 +1272,7 @@ class Things {
             "height": 56,
             "sprite": "HEAD" /* ThingSprite.HEAD */,
             "sequence": "A+",
-            "class": "MO*^",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Cacodemon"
         },
         3006: {
@@ -1157,7 +1281,7 @@ class Things {
             "height": 56,
             "sprite": "SKUL" /* ThingSprite.SKUL */,
             "sequence": "AB+",
-            "class": "M1O*^",
+            "class": 8 /* ThingsClass.Monster */ | 16 /* ThingsClass.Obstacle */ | 32 /* ThingsClass.Shootable */ | 64 /* ThingsClass.HangsFromCeiling */,
             "description": "Lost soul"
         }
     };
@@ -1262,6 +1386,88 @@ class mat4 {
         }
         return out;
     }
+    /**
+     * Rotates a matrix by the given angle around the X axis
+     *
+     * @param {mat4} out the receiving matrix
+     * @param {ReadonlyMat4} a the matrix to rotate
+     * @param {Number} rad the angle to rotate the matrix by
+     * @returns {mat4} out
+     */
+    static rotateX(out, a, rad) {
+        let s = Math.sin(rad);
+        let c = Math.cos(rad);
+        let a10 = a[4];
+        let a11 = a[5];
+        let a12 = a[6];
+        let a13 = a[7];
+        let a20 = a[8];
+        let a21 = a[9];
+        let a22 = a[10];
+        let a23 = a[11];
+        if (a !== out) {
+            // If the source and destination differ, copy the unchanged rows
+            out[0] = a[0];
+            out[1] = a[1];
+            out[2] = a[2];
+            out[3] = a[3];
+            out[12] = a[12];
+            out[13] = a[13];
+            out[14] = a[14];
+            out[15] = a[15];
+        }
+        // Perform axis-specific matrix multiplication
+        out[4] = a10 * c + a20 * s;
+        out[5] = a11 * c + a21 * s;
+        out[6] = a12 * c + a22 * s;
+        out[7] = a13 * c + a23 * s;
+        out[8] = a20 * c - a10 * s;
+        out[9] = a21 * c - a11 * s;
+        out[10] = a22 * c - a12 * s;
+        out[11] = a23 * c - a13 * s;
+        return out;
+    }
+    /**
+     * Rotates a matrix by the given angle around the Y axis
+     *
+     * @param {mat4} out the receiving matrix
+     * @param {ReadonlyMat4} a the matrix to rotate
+     * @param {Number} rad the angle to rotate the matrix by
+     * @returns {mat4} out
+     */
+    static rotateY(out, a, rad) {
+        let s = Math.sin(rad);
+        let c = Math.cos(rad);
+        let a00 = a[0];
+        let a01 = a[1];
+        let a02 = a[2];
+        let a03 = a[3];
+        let a20 = a[8];
+        let a21 = a[9];
+        let a22 = a[10];
+        let a23 = a[11];
+        if (a !== out) {
+            // If the source and destination differ, copy the unchanged rows
+            out[4] = a[4];
+            out[5] = a[5];
+            out[6] = a[6];
+            out[7] = a[7];
+            out[12] = a[12];
+            out[13] = a[13];
+            out[14] = a[14];
+            out[15] = a[15];
+        }
+        // Perform axis-specific matrix multiplication
+        out[0] = a00 * c - a20 * s;
+        out[1] = a01 * c - a21 * s;
+        out[2] = a02 * c - a22 * s;
+        out[3] = a03 * c - a23 * s;
+        out[8] = a00 * s + a20 * c;
+        out[9] = a01 * s + a21 * c;
+        out[10] = a02 * s + a22 * c;
+        out[11] = a03 * s + a23 * c;
+        return out;
+    }
 }
 class UserFileInput {
     constructor(target, loaded) {
@@ -1284,18 +1490,42 @@ class UserFileInput {
         });
     }
 }
-class MapView {
-    canvas;
-    wad;
-    isMouseDown = false;
-    currentMap;
-    awaitingRender = false;
-    constructor(canvas) {
-        this.canvas = canvas;
-        this.wad = new Promise((resolve, _reject) => {
-            canvas.addEventListener("dblclick", async (_event) => {
+// We only ever want a single client area sized canvas, and we want it to destroy and recreate
+// because we may switch the context type.
+class GlobalCanvas {
+    element;
+    get width() { return this._width; }
+    get height() { return this._height; }
+    _width;
+    _height;
+    constructor(onResize) {
+        document.querySelector("canvas")?.remove();
+        this.element = document.createElement("canvas");
+        this.element.style.position = "fixed";
+        this.element.width = window.innerWidth;
+        this.element.height = window.innerHeight;
+        this._width = this.element.width;
+        this._height = this.element.height;
+        document.body.appendChild(this.element);
+        window.addEventListener("resize", (e) => {
+            this.element.width = window.innerWidth;
+            this.element.height = window.innerHeight;
+            this._width = this.element.width;
+            this._height = this.element.height;
+            onResize?.(e);
+        });
+    }
+    getContext(contextId, options) {
+        return this.element.getContext(contextId, options);
+    }
+}
+class UserFileInputUI {
+    canvas = new GlobalCanvas(() => this.draw());
+    constructor(ctor) {
+        const wad = new Promise((resolve, _reject) => {
+            this.canvas.element.addEventListener("dblclick", async (_event) => {
                 try {
-                    canvas.classList.add("loading");
+                    this.canvas.element.classList.add("loading");
                     const response = await fetch("./doom1.wad");
                     if (response.status != 200) {
                         alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
@@ -1305,123 +1535,25 @@ class MapView {
                     resolve(new WadFile(await blob.arrayBuffer()));
                 }
                 finally {
-                    canvas.classList.remove("loading");
+                    this.canvas.element.classList.remove("loading");
                 }
             });
-            new UserFileInput(canvas, (file) => {
+            new UserFileInput(this.canvas.element, (file) => {
                 const wad = new WadFile(file);
                 console.log("wad", wad);
                 resolve(wad);
             });
         });
-        document.addEventListener("wheel", (e) => this.onWheel(e));
-        window.addEventListener("resize", (e) => this.onResize(e));
-        canvas.addEventListener("mousedown", (e) => {
-            this.isMouseDown = true;
-            this.onMouseDown(e);
+        wad.then((wad) => {
+            const mapView = ctor(wad);
+            mapView.displayLevel(0);
         });
-        canvas.addEventListener("mouseup", (e) => {
-            this.isMouseDown = false;
-            this.onMouseUp(e);
-        });
-        canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        document.addEventListener("keyup", (e) => this.onKeyUp(e));
+        this.draw();
     }
-    redraw() {
-        if (this.awaitingRender)
-            return;
-        this.awaitingRender = true;
-        requestAnimationFrame(() => {
-            this.draw();
-            this.awaitingRender = false;
-        });
-    }
-}
-function matVecMul(m, v) {
-    return {
-        x: m.a * v.x + m.c * v.y + m.e,
-        y: m.b * v.x + m.d * v.y + m.f
-    };
-}
-class MapView2D extends MapView {
-    thingHitTester;
-    canvasWidth;
-    canvasHeight;
-    highlightedThingIndex = -1;
-    dashedStrokeOffset = 0;
-    levelIndex = 0;
-    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
-    constructor(canvas) {
-        super(canvas);
-        canvas.style.position = "fixed";
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        this.canvasWidth = canvas.width;
-        this.canvasHeight = canvas.height;
-        this.thingHitTester = new HitTester(this.viewMatrix);
-        setInterval(() => {
-            if (this.highlightedThingIndex == -1)
-                return;
-            --this.dashedStrokeOffset;
-            this.redraw();
-        }, 40);
-        this.redraw();
-    }
-    onWheel(event) {
-        if (this.currentMap == null)
-            return;
-        const pos = matVecMul(this.viewMatrix.inverse(), {
-            x: event.clientX * 1,
-            y: event.clientY * 1
-        });
-        const speed = event.shiftKey ? 0.15 : 0.08;
-        const scale = 1 + (event.deltaY < 0 ? speed : -speed);
-        this.viewMatrix.translateSelf(pos.x, pos.y);
-        this.viewMatrix.scaleSelf(scale);
-        this.viewMatrix.translateSelf(-pos.x, -pos.y);
-        this.redraw();
-    }
-    onResize(event) {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
-        this.canvasWidth = this.canvas.width;
-        this.canvasHeight = this.canvas.height;
-        this.redraw();
-    }
-    onMouseDown(event) { }
-    onMouseUp(event) { }
-    onMouseMove(event) {
-        if (this.currentMap == null)
-            return;
-        const hitResult = this.thingHitTester.hitTest(event.offsetX, event.offsetY);
-        const newHighlightedIndex = hitResult?.index ?? -1;
-        if (this.highlightedThingIndex != newHighlightedIndex) {
-            console.log(hitResult?.info, hitResult?.info?.description);
-            this.highlightedThingIndex = newHighlightedIndex;
-            this.dashedStrokeOffset = 0;
-            this.redraw();
-        }
-        if (this.isMouseDown) {
-            const inverse = this.viewMatrix.inverse();
-            const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
-            const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
-            this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
-            this.redraw();
-        }
-    }
-    onKeyUp(event) {
-        switch (event.key) {
-            case "-":
-                this.levelIndex = Math.max(this.levelIndex - 1, 0);
-                this.displayLevel(this.levelIndex);
-                break;
-            case "+":
-                this.levelIndex = this.levelIndex + 1;
-                this.displayLevel(this.levelIndex);
-                break;
-        }
-    }
-    drawHelpText2d(context) {
+    draw() {
+        const context = this.canvas.getContext("2d");
+        if (context == null)
+            throw new Error("Unable to get 2d context");
         function drawCentered(text, width, height) {
             const metrics = context.measureText(text);
             const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
@@ -1445,24 +1577,141 @@ class MapView2D extends MapView {
         }
         context.setTransform(undefined);
         context.font = "40px serif";
-        drawCentered("Drag & Drop WAD", this.canvasWidth, this.canvasHeight);
+        drawCentered("Drag & Drop WAD", this.canvas.width, this.canvas.height);
         context.font = "20px serif";
-        drawCentered("Or double click to load the shareware WAD", this.canvasWidth, this.canvasHeight + 40);
+        drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvasWidth, this.canvasHeight);
+        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
     }
+}
+class MapView {
+    wad;
+    canvas = new GlobalCanvas();
+    isMouseDown = false;
+    currentMap;
+    levelIndex = 0;
+    awaitingRender = false;
+    constructor(wad) {
+        this.wad = wad;
+        this.currentMap = this.wad.maps[0];
+        document.addEventListener("wheel", (e) => this.onWheel(e));
+        window.addEventListener("resize", (e) => this.onResize(e));
+        this.canvas.element.addEventListener("mousedown", (e) => {
+            this.isMouseDown = true;
+            this.onMouseDown(e);
+        });
+        this.canvas.element.addEventListener("mouseup", (e) => {
+            this.isMouseDown = false;
+            this.onMouseUp(e);
+        });
+        this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
+        this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
+        document.addEventListener("keyup", (e) => {
+            switch (e.key) {
+                case "-":
+                    if (this.levelIndex == 0) {
+                        this.levelIndex = this.wad.maps.length - 1;
+                    }
+                    else {
+                        --this.levelIndex;
+                    }
+                    this.displayLevel(this.levelIndex);
+                    break;
+                case "+":
+                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
+                    this.displayLevel(this.levelIndex);
+                    break;
+            }
+            this.onKeyUp(e);
+        });
+    }
+    redraw() {
+        if (this.awaitingRender)
+            return;
+        this.awaitingRender = true;
+        requestAnimationFrame(() => {
+            this.draw();
+            this.awaitingRender = false;
+        });
+    }
+}
+class MapView2D extends MapView {
+    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
+    thingHitTester = new HitTester();
+    highlightedThingIndex = -1;
+    dashedStrokeOffset = 0;
+    constructor(wad) {
+        super(wad);
+        this.resetValues();
+        setInterval(() => {
+            if (this.highlightedThingIndex == -1)
+                return;
+            --this.dashedStrokeOffset;
+            this.redraw();
+        }, 40);
+        this.redraw();
+    }
+    resetValues() {
+        this.highlightedThingIndex = -1;
+        this.dashedStrokeOffset = 0;
+        this.thingHitTester.startUpdate(0);
+    }
+    onWheel(event) {
+        if (this.currentMap == null)
+            return;
+        const pos = Matrix.vectexMultiply(this.viewMatrix.inverse(), {
+            x: event.clientX * 1,
+            y: event.clientY * 1
+        });
+        const speed = event.shiftKey ? 0.15 : 0.08;
+        const scale = 1 + (event.deltaY < 0 ? speed : -speed);
+        this.viewMatrix.translateSelf(pos.x, pos.y);
+        this.viewMatrix.scaleSelf(scale);
+        this.viewMatrix.translateSelf(-pos.x, -pos.y);
+        this.redraw();
+    }
+    onResize(_event) {
+        this.redraw();
+    }
+    onMouseDown(_event) { }
+    onMouseUp(_event) { }
+    onMouseMove(event) {
+        const hitResult = this.thingHitTester.hitTest(this.viewMatrix, event.offsetX, event.offsetY);
+        const newHighlightedIndex = hitResult?.index ?? -1;
+        if (this.highlightedThingIndex != newHighlightedIndex) {
+            console.log(hitResult?.info, hitResult?.info?.description);
+            this.highlightedThingIndex = newHighlightedIndex;
+            this.dashedStrokeOffset = 0;
+            this.redraw();
+        }
+        if (this.isMouseDown) {
+            const inverse = this.viewMatrix.inverse();
+            const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
+            const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
+            this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
+            this.redraw();
+        }
+    }
+    onDoubleClick(_event) {
+        // This is temporary test code.
+        const triangles = [];
+        const rects = Triangulation.getRectangles(this.currentMap);
+        for (const rect of rects) {
+            Triangulation.rectToTriangle(triangles, rect);
+        }
+        const stl = Triangulation.getStl(triangles);
+        console.log(stl);
+    }
+    onKeyUp(_event) { }
     draw() {
         const context = this.canvas.getContext("2d");
+        if (context == null)
+            throw new Error("Unable to get 2d context");
         context.setTransform(undefined);
-        context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
         context.setTransform(this.viewMatrix);
         context.imageSmoothingQuality = "high";
         context.imageSmoothingEnabled = true;
-        const map = this.currentMap;
-        if (map == null) {
-            this.drawHelpText2d(context);
-            return;
-        }
         // Draws a circle at the origin.
         if (true) {
             context.beginPath();
@@ -1471,8 +1720,7 @@ class MapView2D extends MapView {
             context.fill();
         }
         context.lineWidth = 1;
-        let i = 0;
-        for (const linedef of map.linedefs) {
+        for (const linedef of this.currentMap.linedefs) {
             context.beginPath();
             if (linedef.hasFlag(32 /* LinedefFlags.SECRET */)) {
                 context.strokeStyle = "purple";
@@ -1487,11 +1735,11 @@ class MapView2D extends MapView {
             context.lineTo(linedef.vertexB.x, linedef.vertexB.y);
             context.stroke();
         }
-        // Not all entries are used as index values, so we must grab this while enumerating.
+        // Not all entries are used as index values, so we must grab selectedThingEntry while enumerating.
         let selectedThingEntry = null;
         let thingIndex = 0;
-        this.thingHitTester.startUpdate(map.things.length);
-        for (const thing of map.things) {
+        this.thingHitTester.startUpdate(this.currentMap.things.length);
+        for (const thing of this.currentMap.things) {
             if (thing.description == null) {
                 continue;
             }
@@ -1513,12 +1761,21 @@ class MapView2D extends MapView {
                 context.fill();
             }
             else {
+                const desc = thing.description;
+                const isMonster = (desc.class & 8 /* ThingsClass.Monster */) == 8 /* ThingsClass.Monster */;
                 context.beginPath();
-                context.strokeStyle = "green";
+                context.strokeStyle = isMonster ? "red" : "green";
                 context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                // context.moveTo(centerX, centerY);
-                // const lineLength = thing.description.radius * this.scale * 2;
-                // context.lineTo(
+                // Is it directional? If so, draw a directional line.
+                const isDirectional = isMonster || desc.sprite == "PLAY" /* ThingSprite.PLAY */;
+                if (isDirectional) {
+                    context.moveTo(centerX, centerY);
+                    const lineLength = desc.radius * 1.5;
+                    const radians = (thing.angle / 256) * (Math.PI * 2);
+                    const endX = centerX + Math.cos(radians) * lineLength;
+                    const endY = centerY + Math.sin(radians) * lineLength;
+                    context.lineTo(endX, endY);
+                }
                 context.stroke();
             }
         }
@@ -1553,14 +1810,12 @@ class MapView2D extends MapView {
         context.font = "12pt serif";
         context.fillStyle = "Black";
         context.textBaseline = "top";
-        context.fillText(this.currentMap?.displayName ?? "Unknown", 0, 0, 300);
+        context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
     }
     async displayLevel(index) {
-        this.levelIndex = index;
-        const wad = await this.wad;
-        this.currentMap = wad.maps[index] ?? wad.maps[0];
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+        this.resetValues();
         const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
-        this.currentMap.linedefs;
         if (player1Start != undefined) {
             // Eh. Centering on the player start isn't the best, but might be improvable.
             // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
@@ -1569,27 +1824,14 @@ class MapView2D extends MapView {
         this.fitLevelToView(this.currentMap);
     }
     fitLevelToView(map) {
-        let x = Number.MAX_VALUE;
-        let y = Number.MAX_VALUE;
-        let dx = Number.MIN_VALUE;
-        let dy = Number.MIN_VALUE;
-        for (const linedef of map.linedefs) {
-            x = Math.min(x, linedef.vertexA.x);
-            x = Math.min(x, linedef.vertexB.x);
-            y = Math.min(y, linedef.vertexA.y * 1);
-            y = Math.min(y, linedef.vertexB.y * 1);
-            dx = Math.max(dx, linedef.vertexA.x);
-            dx = Math.max(dx, linedef.vertexB.x);
-            dy = Math.max(dy, linedef.vertexA.y * 1);
-            dy = Math.max(dy, linedef.vertexB.y * 1);
-        }
-        const canvasWidth = this.canvasWidth;
-        const canvasHeight = this.canvasHeight;
-        const scaleX = canvasWidth / (dx - x);
-        const scaleY = canvasHeight / (dy - y);
+        const bb = LinedefEntry.getBoundingBox(map.linedefs);
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
+        const scaleX = canvasWidth / bb.width;
+        const scaleY = canvasHeight / bb.height;
         const scale = Math.min(scaleX, scaleY);
-        let translateX = (canvasWidth - (dx - x) * scale) / 2 - x * scale;
-        let translateY = (canvasHeight - (dy - y) * scale) / 2 - y * scale;
+        let translateX = (canvasWidth - bb.width * scale) / 2 - bb.left * scale;
+        let translateY = (canvasHeight - bb.height * scale) / 2 - bb.top * scale;
         this.viewMatrix.a = scale;
         this.viewMatrix.d = scale;
         this.viewMatrix.e = translateX;
@@ -1598,28 +1840,136 @@ class MapView2D extends MapView {
     }
 }
 class MapView3D extends MapView {
-    constructor(canvas) {
-        super(canvas);
-        canvas.style.position = "fixed";
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+    constructor(wad) {
+        super(wad);
         this.redraw();
     }
     async displayLevel(index) {
-        const wad = await this.wad;
-        this.currentMap = wad.maps[index] ?? wad.maps[0];
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
     }
-    draw() { }
-    onWheel(event) { }
-    onResize(event) { }
-    onMouseDown(event) { }
-    onMouseUp(event) { }
-    onMouseMove(event) { }
-    onKeyUp(event) { }
+    gl = null;
+    draw() {
+        const gl = this.gl ?? this.canvas.getContext("webgl");
+        if (gl === null)
+            throw new Error("WebGL not available");
+        this.gl = gl;
+        // Vertex shader program
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+
+            void main() {
+            gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+            }
+        `;
+        // Fragment shader program
+        const fsSource = `
+            void main() {
+            gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
+            }
+        `;
+        const loadShader = (type, source) => {
+            const shader = gl.createShader(type);
+            if (shader == null)
+                throw new Error("Unable to create shader");
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        };
+        function assertShader(gl, shader) {
+            if (shader == null)
+                throw new Error("Unable to create shader is null");
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+                throw new Error(`Unable to compile shader ${gl.getShaderInfoLog(shader)}`);
+        }
+        const shaderProgram = (() => {
+            const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource);
+            assertShader(gl, vertexShader);
+            const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
+            assertShader(gl, fragmentShader);
+            const shaderProgram = gl.createProgram();
+            if (shaderProgram == null)
+                throw new Error("Unable to create shader program");
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(shaderProgram)}`);
+            }
+            return shaderProgram;
+        })();
+        const verticesNumber = [];
+        const rectangles = Triangulation.getRectangles(this.currentMap);
+        for (const rect of rectangles) {
+            verticesNumber.push(rect.x.x, rect.x.y, rect.x.z);
+            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
+            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
+            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
+            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
+            verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
+        }
+        const vertices = new Float32Array(verticesNumber);
+        console.log("vertices", vertices);
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        gl.clearColor(0.1, 1.0, 0.1, 1.0);
+        gl.clearDepth(1.0);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LEQUAL); // Near things obscure far things
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.useProgram(shaderProgram);
+        // Set the shader uniforms
+        const modelViewMatrix = mat4.create();
+        mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
+        gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 3);
+        // gl.drawElements(gl.TRIANGLES, vertices.length / 3, gl.UNSIGNED_INT, 0);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+        const projectionMatrix = mat4.create();
+        // mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
+        mat4.perspective(projectionMatrix, Math.PI / 4, // field of view in radians
+        gl.canvas.width / gl.canvas.height, // aspect ratio
+        0.1, // near clipping plane
+        100); // far clipping plane
+        const viewMatrixUniformLocation = gl.getUniformLocation(shaderProgram, "uModelViewMatrix");
+        if (viewMatrixUniformLocation == null)
+            throw new Error("Unable to get uniform location");
+        this.viewMatrixUniformLocation = viewMatrixUniformLocation;
+    }
+    viewMatrixUniformLocation = null;
+    cameraPosition = { x: 0, y: 0, z: 5 }; // Initial camera position
+    cameraRotation = { x: 0, y: 0 }; // Camera rotation, in radians
+    onMouseMove(event) {
+        if (!this.isMouseDown) {
+            return;
+        }
+        const sensitivity = 0.01;
+        this.cameraRotation.y += event.movementX * sensitivity;
+        this.cameraRotation.x += event.movementY * sensitivity;
+        this.updateCamera();
+    }
+    updateCamera() {
+        const viewMatrix = mat4.create();
+        mat4.rotateX(viewMatrix, viewMatrix, this.cameraRotation.x);
+        mat4.rotateY(viewMatrix, viewMatrix, this.cameraRotation.y);
+        mat4.translate(viewMatrix, viewMatrix, [-this.cameraPosition.x, -this.cameraPosition.y, -this.cameraPosition.z]);
+        // Set your viewMatrix uniform in your shaders to this new viewMatrix
+        this.gl.uniformMatrix4fv(this.viewMatrixUniformLocation, false, viewMatrix);
+    }
+    onWheel(_event) { }
+    onResize(_event) { }
+    onMouseDown(_event) { }
+    onMouseUp(_event) { }
+    onDoubleClick(_event) { }
+    onKeyUp(_event) { }
 }
-const el = document.querySelector("canvas");
-const mapView = new MapView2D(el);
-mapView.displayLevel(0);
+const _fileinput = new UserFileInputUI((wad) => new MapView2D(wad));
 class BinaryFileReader {
     position = 0;
     u8;
@@ -1698,16 +2048,26 @@ class BinaryFileReader {
         return result;
     }
 }
+var WadIdentifier;
+(function (WadIdentifier) {
+    WadIdentifier[WadIdentifier["IWAD"] = 0x44415749] = "IWAD";
+    WadIdentifier[WadIdentifier["PWAD"] = 0x44415750] = "PWAD";
+})(WadIdentifier || (WadIdentifier = {}));
 class WadHeader {
-    identifier;
+    identifier; // u32
     numlumps;
     infotableofs;
     constructor(reader) {
-        this.identifier = reader.readU32();
+        const identifier = reader.readU32();
+        this.identifier = identifier;
         this.numlumps = reader.readU32();
         this.infotableofs = reader.readU32();
+        if (identifier != WadIdentifier.IWAD && identifier != WadIdentifier.PWAD) {
+            throw new Error(`Invalid WAD identifier ${identifier.toString(16).padStart(8, "0")}`);
+        }
     }
 }
+// https://doomwiki.org/wiki/WAD
 class WadFile {
     wadInfo;
     directory;
@@ -1728,11 +2088,18 @@ class BoundingBox {
     bottom;
     left;
     right;
+    get width() { return this.right - this.left; }
+    get height() { return this.bottom - this.top; }
+    constructor(top, bottom, left, right) {
+        this.top = top;
+        this.bottom = bottom;
+        this.left = left;
+        this.right = right;
+    }
+}
+class BoundingBoxEntry extends BoundingBox {
     constructor(reader) {
-        this.top = reader.readI16();
-        this.bottom = reader.readI16();
-        this.left = reader.readI16();
-        this.right = reader.readI16();
+        super(reader.readI16(), reader.readI16(), reader.readI16(), reader.readI16());
     }
 }
 // https://doomwiki.org/wiki/Node
@@ -1750,8 +2117,8 @@ class NodeEntry {
         this.y = reader.readI16();
         this.dx = reader.readI16();
         this.dy = reader.readI16();
-        this.boundingBoxLeft = new BoundingBox(reader);
-        this.boundingBoxRight = new BoundingBox(reader);
+        this.boundingBoxLeft = new BoundingBoxEntry(reader);
+        this.boundingBoxRight = new BoundingBoxEntry(reader);
         this.rightChild = reader.readI16();
         this.leftChild = reader.readI16();
     }
@@ -1801,11 +2168,15 @@ class Vertex {
     static readAll(entry, reader) {
         return entry.readAll(reader, (reader) => new Vertex(reader));
     }
+    static areEqual(a, b) {
+        return a.x == b.x && a.y == b.y;
+    }
 }
+// https://doomwiki.org/wiki/Thing
 class ThingEntry {
     x;
     y;
-    angle;
+    angle; // 0 = east, 64 = north, 128 = west, 192 = south
     type;
     spawnFlags;
     description;
@@ -1853,11 +2224,34 @@ class LinedefEntry {
     static readAll(map, entry, reader) {
         return entry.readAll(reader, (reader) => new LinedefEntry(map, reader));
     }
+    static areEqual(a, b) {
+        return Vertex.areEqual(a.vertexA, b.vertexA) && Vertex.areEqual(a.vertexB, b.vertexB);
+    }
+    static getBoundingBox(linedefs) {
+        let x = Number.POSITIVE_INFINITY;
+        let y = Number.POSITIVE_INFINITY;
+        let dx = Number.NEGATIVE_INFINITY;
+        let dy = Number.NEGATIVE_INFINITY;
+        for (const linedef of linedefs) {
+            x = Math.min(x, linedef.vertexA.x, linedef.vertexB.x);
+            y = Math.min(y, linedef.vertexA.y, linedef.vertexB.y);
+            dx = Math.max(dx, linedef.vertexA.x, linedef.vertexB.x);
+            dy = Math.max(dy, linedef.vertexA.y, linedef.vertexB.y);
+        }
+        if (x == Number.POSITIVE_INFINITY ||
+            y == Number.POSITIVE_INFINITY ||
+            dx == Number.NEGATIVE_INFINITY ||
+            dy == Number.NEGATIVE_INFINITY) {
+            throw new Error("Invalid bounds");
+        }
+        return new BoundingBox(y, dy, x, dx);
+    }
 }
+// https://doomwiki.org/wiki/Sidedef
 class SideDefEntry {
     map;
-    xOffset;
-    yOffset;
+    textureXOffset;
+    textureYOffset;
     textureNameUpper;
     textureNameLower;
     textureNameMiddle;
@@ -1868,8 +2262,8 @@ class SideDefEntry {
     get sector() { return this.map.sectors[this.sectorIndex]; }
     constructor(map, reader) {
         this.map = map;
-        this.xOffset = reader.readI16();
-        this.yOffset = reader.readI16();
+        this.textureXOffset = reader.readI16();
+        this.textureYOffset = reader.readI16();
         this.textureNameUpper = reader.readFixedLengthString(8);
         this.textureNameLower = reader.readFixedLengthString(8);
         this.textureNameMiddle = reader.readFixedLengthString(8);
@@ -1879,6 +2273,7 @@ class SideDefEntry {
         return entry.readAll(reader, (reader) => new SideDefEntry(map, reader));
     }
 }
+// https://doomwiki.org/wiki/Sector
 class SectorEntry {
     map;
     floorHeight;
@@ -1952,6 +2347,7 @@ class MapEntry {
     segments;
     subSectors;
     sectors;
+    linedefsPerSector;
     reader;
     constructor(wadFile, reader, name, entries) {
         this.wadFile = wadFile;
@@ -1966,6 +2362,24 @@ class MapEntry {
         this.segments = SegmentEntry.readAll(this, entries.segs, reader);
         this.subSectors = SubSectorEntry.readAll(this, entries.ssectors, reader);
         this.sectors = SectorEntry.readAll(this, entries.sectors, reader);
+        // Must come after sectors are loaded.
+        this.linedefsPerSector = this.getLinedefsPerSector();
+    }
+    getLinedefsPerSector() {
+        const linedefsPerSector = {};
+        for (const linedef of this.linedefs) {
+            for (const sidedef of [linedef.sidedefLeft, linedef.sidedefRight]) {
+                if (sidedef == null)
+                    continue;
+                let linedefs = linedefsPerSector[sidedef.sectorIndex];
+                if (linedefs == null) {
+                    linedefs = [];
+                    linedefsPerSector[sidedef.sectorIndex] = linedefs;
+                }
+                linedefs.push(linedef);
+            }
+        }
+        return linedefsPerSector;
     }
     getNodes() {
         return NodeEntry.loadAll(this.reader, this.entries.nodes);
@@ -2004,6 +2418,7 @@ class MapEntry {
         return maps.sort((a, b) => a.name < b.name ? -1 : 1);
     }
 }
+// https://doomwiki.org/wiki/Picture_format
 class PatchEntry {
     width;
     height;
