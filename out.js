@@ -160,9 +160,7 @@ class Triangulation {
     static getStl(triangles) {
         let stlString = "solid doom_map\n";
         for (let triangle of triangles) {
-            const v1 = triangle.v1;
-            const v2 = triangle.v2;
-            const v3 = triangle.v3;
+            const { v1, v2, v3 } = triangle;
             stlString += `facet normal 0 0 0\n`;
             stlString += `    outer loop\n`;
             stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
@@ -1840,18 +1838,13 @@ class MapView2D extends MapView {
     }
 }
 class MapView3D extends MapView {
+    gl;
+    shaderProgram;
     constructor(wad) {
         super(wad);
-        this.redraw();
-    }
-    async displayLevel(index) {
-        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
-    }
-    gl = null;
-    draw() {
-        const gl = this.gl ?? this.canvas.getContext("webgl");
+        const gl = this.canvas.getContext("webgl");
         if (gl === null)
-            throw new Error("WebGL not available");
+            throw new Error("WebGL not available.");
         this.gl = gl;
         // Vertex shader program
         const vsSource = `
@@ -1860,50 +1853,52 @@ class MapView3D extends MapView {
             uniform mat4 uProjectionMatrix;
 
             void main() {
-            gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
             }
         `;
         // Fragment shader program
         const fsSource = `
             void main() {
-            gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
+                gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
             }
         `;
-        const loadShader = (type, source) => {
+        function loadShader(gl, type, source) {
             const shader = gl.createShader(type);
             if (shader == null)
                 throw new Error("Unable to create shader");
             gl.shaderSource(shader, source);
             gl.compileShader(shader);
             if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                const error = gl.getShaderInfoLog(shader);
                 gl.deleteShader(shader);
-                return null;
+                throw new Error(`An error occurred compiling the shaders: ${error}`);
             }
             return shader;
-        };
-        function assertShader(gl, shader) {
-            if (shader == null)
-                throw new Error("Unable to create shader is null");
-            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
-                throw new Error(`Unable to compile shader ${gl.getShaderInfoLog(shader)}`);
         }
-        const shaderProgram = (() => {
-            const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource);
-            assertShader(gl, vertexShader);
-            const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
-            assertShader(gl, fragmentShader);
-            const shaderProgram = gl.createProgram();
-            if (shaderProgram == null)
+        ;
+        this.shaderProgram = (() => {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+            const program = gl.createProgram();
+            if (program == null)
                 throw new Error("Unable to create shader program");
-            gl.attachShader(shaderProgram, vertexShader);
-            gl.attachShader(shaderProgram, fragmentShader);
-            gl.linkProgram(shaderProgram);
-            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(shaderProgram)}`);
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
             }
-            return shaderProgram;
+            return program;
         })();
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        this.redraw();
+    }
+    async displayLevel(index) {
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+    }
+    draw() {
+        const gl = this.gl;
         const verticesNumber = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
         for (const rect of rectangles) {
@@ -1914,17 +1909,16 @@ class MapView3D extends MapView {
             verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
             verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
         }
+        // TODO: Allocate to rectangles.length * 6 * 3 and directly copy to indexes to avoid intermediate buffer.
         const vertices = new Float32Array(verticesNumber);
-        console.log("vertices", vertices);
-        const vertexBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        console.log("vertices2", vertices);
         gl.clearColor(0.1, 1.0, 0.1, 1.0);
         gl.clearDepth(1.0);
         gl.enable(gl.DEPTH_TEST);
         gl.depthFunc(gl.LEQUAL); // Near things obscure far things
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        gl.useProgram(shaderProgram);
+        gl.useProgram(this.shaderProgram);
         // Set the shader uniforms
         const modelViewMatrix = mat4.create();
         mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
@@ -1937,7 +1931,7 @@ class MapView3D extends MapView {
         gl.canvas.width / gl.canvas.height, // aspect ratio
         0.1, // near clipping plane
         100); // far clipping plane
-        const viewMatrixUniformLocation = gl.getUniformLocation(shaderProgram, "uModelViewMatrix");
+        const viewMatrixUniformLocation = gl.getUniformLocation(this.shaderProgram, "uModelViewMatrix");
         if (viewMatrixUniformLocation == null)
             throw new Error("Unable to get uniform location");
         this.viewMatrixUniformLocation = viewMatrixUniformLocation;
@@ -1961,6 +1955,7 @@ class MapView3D extends MapView {
         mat4.translate(viewMatrix, viewMatrix, [-this.cameraPosition.x, -this.cameraPosition.y, -this.cameraPosition.z]);
         // Set your viewMatrix uniform in your shaders to this new viewMatrix
         this.gl.uniformMatrix4fv(this.viewMatrixUniformLocation, false, viewMatrix);
+        this.redraw();
     }
     onWheel(_event) { }
     onResize(_event) { }
@@ -1969,7 +1964,7 @@ class MapView3D extends MapView {
     onDoubleClick(_event) { }
     onKeyUp(_event) { }
 }
-const _fileinput = new UserFileInputUI((wad) => new MapView2D(wad));
+const _fileinput = new UserFileInputUI((wad) => new MapView3D(wad));
 class BinaryFileReader {
     position = 0;
     u8;

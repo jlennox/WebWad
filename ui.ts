@@ -447,20 +447,13 @@ class MapView2D extends MapView {
 }
 
 class MapView3D extends MapView {
+    private readonly gl: WebGLRenderingContext;
+    private readonly shaderProgram: WebGLProgram;
+
     constructor(wad: WadFile) {
         super(wad);
-        this.redraw();
-    }
-
-    public async displayLevel(index: number): Promise<void> {
-        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
-    }
-
-    private gl: WebGLRenderingContext | null = null;
-
-    protected override draw(): void {
-        const gl = this.gl ?? this.canvas.getContext("webgl");
-        if (gl === null) throw new Error("WebGL not available");
+        const gl = this.canvas.getContext("webgl");
+        if (gl === null) throw new Error("WebGL not available.");
         this.gl = gl;
 
         // Vertex shader program
@@ -470,18 +463,18 @@ class MapView3D extends MapView {
             uniform mat4 uProjectionMatrix;
 
             void main() {
-            gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
             }
         `;
 
         // Fragment shader program
         const fsSource = `
             void main() {
-            gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
+                gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
             }
         `;
 
-        const loadShader = (type: number, source: string) => {
+        function loadShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
             const shader = gl.createShader(type);
             if (shader == null) throw new Error("Unable to create shader");
 
@@ -489,37 +482,43 @@ class MapView3D extends MapView {
             gl.compileShader(shader);
 
             if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                const error = gl.getShaderInfoLog(shader);
                 gl.deleteShader(shader);
-                return null;
+                throw new Error(`An error occurred compiling the shaders: ${error}`);
             }
 
             return shader;
         };
 
-        function assertShader(gl: WebGLRenderingContext, shader: WebGLShader | null): asserts shader is WebGLShader {
-            if (shader == null) throw new Error("Unable to create shader is null");
-            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(`Unable to compile shader ${gl.getShaderInfoLog(shader)}`);
-        }
+        this.shaderProgram = (() => {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
 
-        const shaderProgram = (() => {
-            const vertexShader = loadShader(gl.VERTEX_SHADER, vsSource);
-            assertShader(gl, vertexShader)
-            const fragmentShader = loadShader(gl.FRAGMENT_SHADER, fsSource);
-            assertShader(gl, fragmentShader)
+            const program = gl.createProgram();
+            if (program == null) throw new Error("Unable to create shader program");
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
 
-            const shaderProgram = gl.createProgram();
-            if (shaderProgram == null) throw new Error("Unable to create shader program");
-            gl.attachShader(shaderProgram, vertexShader);
-            gl.attachShader(shaderProgram, fragmentShader);
-            gl.linkProgram(shaderProgram);
-
-            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
-                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(shaderProgram)}`);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
             }
 
-            return shaderProgram;
+            return program;
         })();
+
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+
+        this.redraw();
+    }
+
+    public async displayLevel(index: number): Promise<void> {
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+    }
+
+    protected override draw(): void {
+        const gl = this.gl;
 
         const verticesNumber: number[] = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
@@ -534,12 +533,10 @@ class MapView3D extends MapView {
             verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
         }
 
+        // TODO: Allocate to rectangles.length * 6 * 3 and directly copy to indexes to avoid intermediate buffer.
         const vertices = new Float32Array(verticesNumber);
-        console.log("vertices", vertices);
-
-        const vertexBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        console.log("vertices2", vertices);
 
         gl.clearColor(0.1, 1.0, 0.1, 1.0);
         gl.clearDepth(1.0);
@@ -547,7 +544,7 @@ class MapView3D extends MapView {
         gl.depthFunc(gl.LEQUAL); // Near things obscure far things
 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        gl.useProgram(shaderProgram);
+        gl.useProgram(this.shaderProgram);
 
         // Set the shader uniforms
 
@@ -566,8 +563,7 @@ class MapView3D extends MapView {
             0.1, // near clipping plane
             100); // far clipping plane
 
-
-        const viewMatrixUniformLocation = gl.getUniformLocation(shaderProgram, "uModelViewMatrix");
+        const viewMatrixUniformLocation = gl.getUniformLocation(this.shaderProgram, "uModelViewMatrix");
         if (viewMatrixUniformLocation == null) throw new Error("Unable to get uniform location");
         this.viewMatrixUniformLocation = viewMatrixUniformLocation;
     }
@@ -583,8 +579,8 @@ class MapView3D extends MapView {
         }
 
         const sensitivity = 0.01;
-        this.cameraRotation.y +=  event.movementX * sensitivity;
-        this.cameraRotation.x +=  event.movementY * sensitivity;
+        this.cameraRotation.y += event.movementX * sensitivity;
+        this.cameraRotation.x += event.movementY * sensitivity;
         this.updateCamera();
     }
 
@@ -596,6 +592,7 @@ class MapView3D extends MapView {
 
         // Set your viewMatrix uniform in your shaders to this new viewMatrix
         this.gl!.uniformMatrix4fv(this.viewMatrixUniformLocation!, false, viewMatrix);
+        this.redraw();
     }
 
     protected override onWheel(_event: WheelEvent): void {}
@@ -606,4 +603,4 @@ class MapView3D extends MapView {
     protected override onKeyUp(_event: KeyboardEvent): void {}
 }
 
-const _fileinput = new UserFileInputUI((wad) => new MapView2D(wad));
+const _fileinput = new UserFileInputUI((wad) => new MapView3D(wad));

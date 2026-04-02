@@ -136,9 +136,7 @@ class Triangulation {
         let stlString = "solid doom_map\n";
 
         for (let triangle of triangles) {
-            const v1 = triangle.v1;
-            const v2 = triangle.v2;
-            const v3 = triangle.v3;
+            const {v1, v2, v3} = triangle;
             stlString += `facet normal 0 0 0\n`;
             stlString += `    outer loop\n`;
             stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
