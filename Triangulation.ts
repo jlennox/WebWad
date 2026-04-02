@@ -12,31 +12,46 @@ class Triangulation {
         for (const linedef of map.linedefs) {
             const a = linedef.vertexA;
             const b = linedef.vertexB;
-            const sectora = linedef.sidedefLeft?.sector;
-            const sectorb = linedef.sidedefRight?.sector;
-            const floora = sectora?.floorHeight ?? 0;
-            const floorb = sectorb?.floorHeight ?? 0;
-            const ceilinga = sectora?.ceilingHeight ?? 0;
-            const ceilingb = sectorb?.ceilingHeight ?? 0;
+            const sectorLeft = linedef.sidedefLeft?.sector;
+            const sectorRight = linedef.sidedefRight?.sector;
 
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
-            const bl = { x: a.x, y: a.y, z: floora };
-            const br = { x: a.x, y: a.y, z: ceilinga };
-            const tl = { x: b.x, y: b.y, z: floorb };
-            const tr = { x: b.x, y: b.y, z: ceilingb };
-            rectangles.push({
-                x: bl,
-                y: bl,
-                x2: tl,
-                y2: tl
-            });
-            rectangles.push({
-                x: br,
-                y: br,
-                x2: tr,
-                y2: tr
-            });
+            if (sectorLeft == null || sectorRight == null) {
+                // Single-sided wall: full wall from floor to ceiling.
+                const sector = sectorLeft ?? sectorRight;
+                if (sector == null) continue;
+                rectangles.push({
+                    x:  { x: a.x, y: a.y, z: sector.floorHeight },
+                    y:  { x: a.x, y: a.y, z: sector.ceilingHeight },
+                    x2: { x: b.x, y: b.y, z: sector.floorHeight },
+                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight }
+                });
+            } else {
+                // Two-sided wall: draw walls where heights differ.
+                var lowerFloor = Math.min(sectorLeft.floorHeight, sectorRight.floorHeight);
+                var upperFloor = Math.max(sectorLeft.floorHeight, sectorRight.floorHeight);
+                var lowerCeiling = Math.min(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
+                var upperCeiling = Math.max(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
+
+                // Lower wall (step-up between different floor heights).
+                if (upperFloor > lowerFloor) {
+                    rectangles.push({
+                        x:  { x: a.x, y: a.y, z: lowerFloor },
+                        y:  { x: a.x, y: a.y, z: upperFloor },
+                        x2: { x: b.x, y: b.y, z: lowerFloor },
+                        y2: { x: b.x, y: b.y, z: upperFloor }
+                    });
+                }
+
+                // Upper wall (between different ceiling heights).
+                if (upperCeiling > lowerCeiling) {
+                    rectangles.push({
+                        x:  { x: a.x, y: a.y, z: lowerCeiling },
+                        y:  { x: a.x, y: a.y, z: upperCeiling },
+                        x2: { x: b.x, y: b.y, z: lowerCeiling },
+                        y2: { x: b.x, y: b.y, z: upperCeiling }
+                    });
+                }
+            }
         }
 
         for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {

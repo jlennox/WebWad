@@ -64,30 +64,45 @@ class Triangulation {
         for (const linedef of map.linedefs) {
             const a = linedef.vertexA;
             const b = linedef.vertexB;
-            const sectora = linedef.sidedefLeft?.sector;
-            const sectorb = linedef.sidedefRight?.sector;
-            const floora = sectora?.floorHeight ?? 0;
-            const floorb = sectorb?.floorHeight ?? 0;
-            const ceilinga = sectora?.ceilingHeight ?? 0;
-            const ceilingb = sectorb?.ceilingHeight ?? 0;
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
-            const bl = { x: a.x, y: a.y, z: floora };
-            const br = { x: a.x, y: a.y, z: ceilinga };
-            const tl = { x: b.x, y: b.y, z: floorb };
-            const tr = { x: b.x, y: b.y, z: ceilingb };
-            rectangles.push({
-                x: bl,
-                y: bl,
-                x2: tl,
-                y2: tl
-            });
-            rectangles.push({
-                x: br,
-                y: br,
-                x2: tr,
-                y2: tr
-            });
+            const sectorLeft = linedef.sidedefLeft?.sector;
+            const sectorRight = linedef.sidedefRight?.sector;
+            if (sectorLeft == null || sectorRight == null) {
+                // Single-sided wall: full wall from floor to ceiling.
+                const sector = sectorLeft ?? sectorRight;
+                if (sector == null)
+                    continue;
+                rectangles.push({
+                    x: { x: a.x, y: a.y, z: sector.floorHeight },
+                    y: { x: a.x, y: a.y, z: sector.ceilingHeight },
+                    x2: { x: b.x, y: b.y, z: sector.floorHeight },
+                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight }
+                });
+            }
+            else {
+                // Two-sided wall: draw walls where heights differ.
+                var lowerFloor = Math.min(sectorLeft.floorHeight, sectorRight.floorHeight);
+                var upperFloor = Math.max(sectorLeft.floorHeight, sectorRight.floorHeight);
+                var lowerCeiling = Math.min(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
+                var upperCeiling = Math.max(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
+                // Lower wall (step-up between different floor heights).
+                if (upperFloor > lowerFloor) {
+                    rectangles.push({
+                        x: { x: a.x, y: a.y, z: lowerFloor },
+                        y: { x: a.x, y: a.y, z: upperFloor },
+                        x2: { x: b.x, y: b.y, z: lowerFloor },
+                        y2: { x: b.x, y: b.y, z: upperFloor }
+                    });
+                }
+                // Upper wall (between different ceiling heights).
+                if (upperCeiling > lowerCeiling) {
+                    rectangles.push({
+                        x: { x: a.x, y: a.y, z: lowerCeiling },
+                        y: { x: a.x, y: a.y, z: upperCeiling },
+                        x2: { x: b.x, y: b.y, z: lowerCeiling },
+                        y2: { x: b.x, y: b.y, z: upperCeiling }
+                    });
+                }
+            }
         }
         for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
             const vertices = [];
@@ -1840,26 +1855,41 @@ class MapView2D extends MapView {
 class MapView3D extends MapView {
     gl;
     shaderProgram;
+    positionBuffer;
+    colorBuffer;
+    aVertexPosition;
+    aVertexColor;
+    uProjectionMatrix;
+    uModelViewMatrix;
+    vertexCount = 0;
+    cameraPosition = { x: 0, y: 0, z: 0 };
+    cameraYaw = 0;
+    cameraPitch = 0;
+    keysDown = new Set();
     constructor(wad) {
         super(wad);
         const gl = this.canvas.getContext("webgl");
         if (gl === null)
             throw new Error("WebGL not available.");
         this.gl = gl;
-        // Vertex shader program
         const vsSource = `
-            attribute vec4 aVertexPosition;
-            uniform mat4 uModelViewMatrix;
+            attribute vec3 aVertexPosition;
+            attribute vec3 aVertexColor;
             uniform mat4 uProjectionMatrix;
+            uniform mat4 uModelViewMatrix;
+            varying lowp vec3 vColor;
 
             void main() {
-                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+                vColor = aVertexColor;
             }
         `;
-        // Fragment shader program
         const fsSource = `
+            precision lowp float;
+            varying lowp vec3 vColor;
+
             void main() {
-                gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0); // Set the color to white
+                gl_FragColor = vec4(vColor, 1.0);
             }
         `;
         function loadShader(gl, type, source) {
@@ -1875,94 +1905,217 @@ class MapView3D extends MapView {
             }
             return shader;
         }
-        ;
-        this.shaderProgram = (() => {
-            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
-            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
-            const program = gl.createProgram();
-            if (program == null)
-                throw new Error("Unable to create shader program");
-            gl.attachShader(program, vertexShader);
-            gl.attachShader(program, fragmentShader);
-            gl.linkProgram(program);
-            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-                throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
-            }
-            return program;
-        })();
-        const vertexBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+        const program = gl.createProgram();
+        if (program == null)
+            throw new Error("Unable to create shader program");
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
+        }
+        this.shaderProgram = program;
+        this.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
+        this.aVertexColor = gl.getAttribLocation(program, "aVertexColor");
+        this.uProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix");
+        this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
+        const positionBuffer = gl.createBuffer();
+        if (positionBuffer == null)
+            throw new Error("Unable to create position buffer");
+        this.positionBuffer = positionBuffer;
+        const colorBuffer = gl.createBuffer();
+        if (colorBuffer == null)
+            throw new Error("Unable to create color buffer");
+        this.colorBuffer = colorBuffer;
+        document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
+        document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
+        setInterval(() => this.tick(), 1000 / 60);
         this.redraw();
     }
     async displayLevel(index) {
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+        this.buildGeometry();
+        const playerStart = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
+        if (playerStart != undefined) {
+            this.cameraPosition.x = playerStart.x;
+            this.cameraPosition.y = 41;
+            this.cameraPosition.z = -playerStart.y;
+            var radians = (playerStart.angle / 256) * (Math.PI * 2);
+            this.cameraYaw = -radians + Math.PI;
+        }
+        else {
+            this.cameraPosition.x = 0;
+            this.cameraPosition.y = 41;
+            this.cameraPosition.z = 0;
+            this.cameraYaw = 0;
+        }
+        this.cameraPitch = 0;
+        this.redraw();
+    }
+    buildGeometry() {
+        const gl = this.gl;
+        const positions = [];
+        const colors = [];
+        const rectangles = Triangulation.getRectangles(this.currentMap);
+        for (const rect of rectangles) {
+            // Remap: doom(x,y,z) -> gl(x, z, -y). Y is negated to convert
+            // DOOM's left-handed coordinates to GL's right-handed coordinates.
+            const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
+            const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
+            const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
+            const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
+            positions.push(v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z, v2x, v2y, v2z, v1x, v1y, v1z, v3x, v3y, v3z);
+            // Compute face normal for flat shading.
+            const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
+            const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
+            var normalX = edge1y * edge2z - edge1z * edge2y;
+            var normalY = edge1z * edge2x - edge1x * edge2z;
+            var normalZ = edge1x * edge2y - edge1y * edge2x;
+            var length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
+            if (length > 0) {
+                normalX /= length;
+                normalY /= length;
+                normalZ /= length;
+            }
+            // Simple directional light from above-right.
+            var lightDot = normalX * 0.3 + normalY * 0.7 + normalZ * 0.2;
+            if (lightDot < 0)
+                lightDot = -lightDot;
+            var brightness = 0.25 + 0.75 * lightDot;
+            // Walls get a brownish-gray, floors get darker gray-green, ceilings lighter.
+            var isFlat = Math.abs(normalY) > 0.9;
+            var r, g, b;
+            if (isFlat) {
+                if (normalY > 0) {
+                    // Floor
+                    r = 0.35 * brightness;
+                    g = 0.40 * brightness;
+                    b = 0.30 * brightness;
+                }
+                else {
+                    // Ceiling
+                    r = 0.50 * brightness;
+                    g = 0.50 * brightness;
+                    b = 0.55 * brightness;
+                }
+            }
+            else {
+                // Wall
+                r = 0.55 * brightness;
+                g = 0.45 * brightness;
+                b = 0.35 * brightness;
+            }
+            for (var i = 0; i < 6; ++i) {
+                colors.push(r, g, b);
+            }
+        }
+        this.vertexCount = positions.length / 3;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+    }
+    tick() {
+        var moved = false;
+        var moveSpeed = 10;
+        if (this.keysDown.has("shift"))
+            moveSpeed = 30;
+        var forwardX = Math.sin(this.cameraYaw);
+        var forwardZ = -Math.cos(this.cameraYaw);
+        var rightX = Math.cos(this.cameraYaw);
+        var rightZ = Math.sin(this.cameraYaw);
+        if (this.keysDown.has("w")) {
+            this.cameraPosition.x += forwardX * moveSpeed;
+            this.cameraPosition.z += forwardZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has("s")) {
+            this.cameraPosition.x -= forwardX * moveSpeed;
+            this.cameraPosition.z -= forwardZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has("a")) {
+            this.cameraPosition.x -= rightX * moveSpeed;
+            this.cameraPosition.z -= rightZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has("d")) {
+            this.cameraPosition.x += rightX * moveSpeed;
+            this.cameraPosition.z += rightZ * moveSpeed;
+            moved = true;
+        }
+        if (moved)
+            this.redraw();
     }
     draw() {
         const gl = this.gl;
-        const verticesNumber = [];
-        const rectangles = Triangulation.getRectangles(this.currentMap);
-        for (const rect of rectangles) {
-            verticesNumber.push(rect.x.x, rect.x.y, rect.x.z);
-            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
-            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
-            verticesNumber.push(rect.x2.x, rect.x2.y, rect.x2.z);
-            verticesNumber.push(rect.y.x, rect.y.y, rect.y.z);
-            verticesNumber.push(rect.y2.x, rect.y2.y, rect.y2.z);
-        }
-        // TODO: Allocate to rectangles.length * 6 * 3 and directly copy to indexes to avoid intermediate buffer.
-        const vertices = new Float32Array(verticesNumber);
-        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-        console.log("vertices2", vertices);
-        gl.clearColor(0.1, 1.0, 0.1, 1.0);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+        gl.clearColor(0.1, 0.1, 0.15, 1.0);
         gl.clearDepth(1.0);
         gl.enable(gl.DEPTH_TEST);
-        gl.depthFunc(gl.LEQUAL); // Near things obscure far things
+        gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.useProgram(this.shaderProgram);
-        // Set the shader uniforms
-        const modelViewMatrix = mat4.create();
-        mat4.translate(modelViewMatrix, modelViewMatrix, [-0.0, 0.0, -6.0]); // Move the drawing position a bit to where we want to start drawing the square
-        gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 3);
-        // gl.drawElements(gl.TRIANGLES, vertices.length / 3, gl.UNSIGNED_INT, 0);
-        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-        const projectionMatrix = mat4.create();
-        // mat4.perspective(projectionMatrix, 45 * Math.PI / 180, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
-        mat4.perspective(projectionMatrix, Math.PI / 4, // field of view in radians
-        gl.canvas.width / gl.canvas.height, // aspect ratio
-        0.1, // near clipping plane
-        100); // far clipping plane
-        const viewMatrixUniformLocation = gl.getUniformLocation(this.shaderProgram, "uModelViewMatrix");
-        if (viewMatrixUniformLocation == null)
-            throw new Error("Unable to get uniform location");
-        this.viewMatrixUniformLocation = viewMatrixUniformLocation;
+        // Projection matrix.
+        var projectionMatrix = mat4.create();
+        var aspect = gl.canvas.width / gl.canvas.height;
+        mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
+        gl.uniformMatrix4fv(this.uProjectionMatrix, false, projectionMatrix);
+        // View matrix: rotate then translate (camera transform).
+        var viewMatrix = mat4.create();
+        mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
+        mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
+        mat4.translate(viewMatrix, viewMatrix, [
+            -this.cameraPosition.x,
+            -this.cameraPosition.y,
+            -this.cameraPosition.z
+        ]);
+        gl.uniformMatrix4fv(this.uModelViewMatrix, false, viewMatrix);
+        // Bind position attribute.
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.vertexAttribPointer(this.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.aVertexPosition);
+        // Bind color attribute.
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+        gl.vertexAttribPointer(this.aVertexColor, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.aVertexColor);
+        gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
     }
-    viewMatrixUniformLocation = null;
-    cameraPosition = { x: 0, y: 0, z: 5 }; // Initial camera position
-    cameraRotation = { x: 0, y: 0 }; // Camera rotation, in radians
     onMouseMove(event) {
-        if (!this.isMouseDown) {
+        if (!this.isMouseDown)
             return;
-        }
-        const sensitivity = 0.01;
-        this.cameraRotation.y += event.movementX * sensitivity;
-        this.cameraRotation.x += event.movementY * sensitivity;
-        this.updateCamera();
-    }
-    updateCamera() {
-        const viewMatrix = mat4.create();
-        mat4.rotateX(viewMatrix, viewMatrix, this.cameraRotation.x);
-        mat4.rotateY(viewMatrix, viewMatrix, this.cameraRotation.y);
-        mat4.translate(viewMatrix, viewMatrix, [-this.cameraPosition.x, -this.cameraPosition.y, -this.cameraPosition.z]);
-        // Set your viewMatrix uniform in your shaders to this new viewMatrix
-        this.gl.uniformMatrix4fv(this.viewMatrixUniformLocation, false, viewMatrix);
+        var sensitivity = 0.003;
+        this.cameraYaw += event.movementX * sensitivity;
+        this.cameraPitch += event.movementY * sensitivity;
+        // Clamp pitch to avoid flipping.
+        var maxPitch = Math.PI / 2 - 0.01;
+        if (this.cameraPitch > maxPitch)
+            this.cameraPitch = maxPitch;
+        if (this.cameraPitch < -maxPitch)
+            this.cameraPitch = -maxPitch;
         this.redraw();
     }
-    onWheel(_event) { }
-    onResize(_event) { }
+    onWheel(event) {
+        // Move forward/backward with scroll wheel.
+        var moveSpeed = event.shiftKey ? 100 : 30;
+        var direction = event.deltaY < 0 ? 1 : -1;
+        this.cameraPosition.x += Math.sin(this.cameraYaw) * moveSpeed * direction;
+        this.cameraPosition.z += -Math.cos(this.cameraYaw) * moveSpeed * direction;
+        this.redraw();
+    }
+    onResize(_event) { this.redraw(); }
     onMouseDown(_event) { }
     onMouseUp(_event) { }
     onDoubleClick(_event) { }
-    onKeyUp(_event) { }
+    onKeyUp(event) {
+        if (event.key === " ")
+            this.cameraPosition.y += 20;
+        if (event.key === "z")
+            this.cameraPosition.y -= 20;
+        this.redraw();
+    }
 }
 const _fileinput = new UserFileInputUI((wad) => new MapView3D(wad));
 class BinaryFileReader {
