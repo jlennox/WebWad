@@ -1923,14 +1923,18 @@ class MapView3D extends MapView {
         this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
         const positionBuffer = gl.createBuffer();
         if (positionBuffer == null)
-            throw new Error("Unable to create position buffer");
+            throw new Error("Unable to create position buffer.");
         this.positionBuffer = positionBuffer;
         const colorBuffer = gl.createBuffer();
         if (colorBuffer == null)
-            throw new Error("Unable to create color buffer");
+            throw new Error("Unable to create color buffer.");
         this.colorBuffer = colorBuffer;
         document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
         document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
+        UIOverlay.setLowerLeftText("Move: WASD\n" +
+            "Look: Mouse drag\n" +
+            "Up/down: Space/Z or mouse wheel\n" +
+            "Change level: +/-");
         setInterval(() => this.tick(), 1000 / 60);
         this.redraw();
     }
@@ -1942,7 +1946,7 @@ class MapView3D extends MapView {
             this.cameraPosition.x = playerStart.x;
             this.cameraPosition.y = 41;
             this.cameraPosition.z = -playerStart.y;
-            var radians = (playerStart.angle / 256) * (Math.PI * 2);
+            const radians = (playerStart.angle / 256) * (Math.PI * 2);
             this.cameraYaw = -radians + Math.PI;
         }
         else {
@@ -1960,8 +1964,8 @@ class MapView3D extends MapView {
         const colors = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
         for (const rect of rectangles) {
-            // Remap: doom(x,y,z) -> gl(x, z, -y). Y is negated to convert
-            // DOOM's left-handed coordinates to GL's right-handed coordinates.
+            // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
+            // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
             const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
             const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
             const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
@@ -1970,23 +1974,23 @@ class MapView3D extends MapView {
             // Compute face normal for flat shading.
             const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
             const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
-            var normalX = edge1y * edge2z - edge1z * edge2y;
-            var normalY = edge1z * edge2x - edge1x * edge2z;
-            var normalZ = edge1x * edge2y - edge1y * edge2x;
-            var length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
+            let normalX = edge1y * edge2z - edge1z * edge2y;
+            let normalY = edge1z * edge2x - edge1x * edge2z;
+            let normalZ = edge1x * edge2y - edge1y * edge2x;
+            const length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
             if (length > 0) {
                 normalX /= length;
                 normalY /= length;
                 normalZ /= length;
             }
             // Simple directional light from above-right.
-            var lightDot = normalX * 0.3 + normalY * 0.7 + normalZ * 0.2;
+            let lightDot = normalX * 0.3 + normalY * 0.7 + normalZ * 0.2;
             if (lightDot < 0)
                 lightDot = -lightDot;
-            var brightness = 0.25 + 0.75 * lightDot;
+            const brightness = 0.25 + 0.75 * lightDot;
             // Walls get a brownish-gray, floors get darker gray-green, ceilings lighter.
-            var isFlat = Math.abs(normalY) > 0.9;
-            var r, g, b;
+            const isFlat = Math.abs(normalY) > 0.9;
+            let r, g, b;
             if (isFlat) {
                 if (normalY > 0) {
                     // Floor
@@ -2007,7 +2011,7 @@ class MapView3D extends MapView {
                 g = 0.45 * brightness;
                 b = 0.35 * brightness;
             }
-            for (var i = 0; i < 6; ++i) {
+            for (let i = 0; i < 6; ++i) {
                 colors.push(r, g, b);
             }
         }
@@ -2018,14 +2022,12 @@ class MapView3D extends MapView {
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
     }
     tick() {
-        var moved = false;
-        var moveSpeed = 10;
-        if (this.keysDown.has("shift"))
-            moveSpeed = 30;
-        var forwardX = Math.sin(this.cameraYaw);
-        var forwardZ = -Math.cos(this.cameraYaw);
-        var rightX = Math.cos(this.cameraYaw);
-        var rightZ = Math.sin(this.cameraYaw);
+        let moved = false;
+        const moveSpeed = this.keysDown.has("shift") ? 30 : 10;
+        const forwardX = Math.sin(this.cameraYaw);
+        const forwardZ = -Math.cos(this.cameraYaw);
+        const rightX = Math.cos(this.cameraYaw);
+        const rightZ = Math.sin(this.cameraYaw);
         if (this.keysDown.has("w")) {
             this.cameraPosition.x += forwardX * moveSpeed;
             this.cameraPosition.z += forwardZ * moveSpeed;
@@ -2046,6 +2048,14 @@ class MapView3D extends MapView {
             this.cameraPosition.z += rightZ * moveSpeed;
             moved = true;
         }
+        if (this.keysDown.has(" ")) {
+            this.cameraPosition.y += 20;
+            moved = true;
+        }
+        if (this.keysDown.has("z")) {
+            this.cameraPosition.y -= 20;
+            moved = true;
+        }
         if (moved)
             this.redraw();
     }
@@ -2059,12 +2069,12 @@ class MapView3D extends MapView {
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.useProgram(this.shaderProgram);
         // Projection matrix.
-        var projectionMatrix = mat4.create();
-        var aspect = gl.canvas.width / gl.canvas.height;
+        const projectionMatrix = mat4.create();
+        const aspect = gl.canvas.width / gl.canvas.height;
         mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
         gl.uniformMatrix4fv(this.uProjectionMatrix, false, projectionMatrix);
         // View matrix: rotate then translate (camera transform).
-        var viewMatrix = mat4.create();
+        const viewMatrix = mat4.create();
         mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
         mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
         mat4.translate(viewMatrix, viewMatrix, [
@@ -2086,11 +2096,11 @@ class MapView3D extends MapView {
     onMouseMove(event) {
         if (!this.isMouseDown)
             return;
-        var sensitivity = 0.003;
+        const sensitivity = 0.003;
         this.cameraYaw += event.movementX * sensitivity;
         this.cameraPitch += event.movementY * sensitivity;
         // Clamp pitch to avoid flipping.
-        var maxPitch = Math.PI / 2 - 0.01;
+        const maxPitch = Math.PI / 2 - 0.01;
         if (this.cameraPitch > maxPitch)
             this.cameraPitch = maxPitch;
         if (this.cameraPitch < -maxPitch)
@@ -2098,23 +2108,27 @@ class MapView3D extends MapView {
         this.redraw();
     }
     onWheel(event) {
-        // Move forward/backward with scroll wheel.
-        var moveSpeed = event.shiftKey ? 100 : 30;
-        var direction = event.deltaY < 0 ? 1 : -1;
-        this.cameraPosition.x += Math.sin(this.cameraYaw) * moveSpeed * direction;
-        this.cameraPosition.z += -Math.cos(this.cameraYaw) * moveSpeed * direction;
+        const moveSpeed = event.shiftKey ? 100 : 30;
+        const direction = event.deltaY < 0 ? -1 : 1;
+        this.cameraPosition.y += moveSpeed * direction;
         this.redraw();
     }
     onResize(_event) { this.redraw(); }
     onMouseDown(_event) { }
     onMouseUp(_event) { }
     onDoubleClick(_event) { }
-    onKeyUp(event) {
-        if (event.key === " ")
-            this.cameraPosition.y += 20;
-        if (event.key === "z")
-            this.cameraPosition.y -= 20;
-        this.redraw();
+    onKeyUp(event) { }
+}
+class UIOverlay {
+    static instance = new UIOverlay();
+    lowerleftElement;
+    constructor() {
+        this.lowerleftElement = document.querySelector(".overlay .lowerleft");
+        if (this.lowerleftElement == null)
+            throw new Error("Unable to find overlay element.");
+    }
+    static setLowerLeftText(text) {
+        UIOverlay.instance.lowerleftElement.textContent = text;
     }
 }
 const _fileinput = new UserFileInputUI((wad) => new MapView3D(wad));
@@ -2221,6 +2235,7 @@ class WadFile {
     directory;
     maps;
     patches;
+    palette;
     reader;
     constructor(file) {
         this.reader = new BinaryFileReader(file);
@@ -2229,6 +2244,7 @@ class WadFile {
         this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
         this.maps = MapEntry.readAll(this, this.reader, this.directory);
         this.patches = PatchEntry.readAll(this, this.reader);
+        this.palette = PaletteEntry.read(this, this.reader);
     }
 }
 class BoundingBox {
@@ -2274,6 +2290,10 @@ class NodeEntry {
         return nodeEntry.readAll(reader, (reader) => new NodeEntry(reader));
     }
 }
+var LumpName;
+(function (LumpName) {
+    LumpName["PLAYPAL"] = "PLAYPAL";
+})(LumpName || (LumpName = {}));
 // "lump"
 class DirectoryEntry {
     filepos;
@@ -2299,7 +2319,7 @@ class DirectoryEntry {
         const results = [];
         reader.pushPosition(this.filepos);
         const end = reader.position + this.size;
-        while (reader.position <= end) {
+        while (reader.position < end) {
             results.push(read(reader));
         }
         reader.popPosition();
@@ -2477,7 +2497,7 @@ class SubSectorEntry {
     constructor(map, reader) {
         this.segCount = reader.readI16();
         this.firstSegIndex = reader.readI16();
-        this.segments = map.segments.slice(this.firstSegIndex, this.segCount);
+        this.segments = map.segments.slice(this.firstSegIndex, this.firstSegIndex + this.segCount);
     }
     static readAll(map, entry, reader) {
         return entry.readAll(reader, (reader) => new SubSectorEntry(map, reader));
@@ -2613,6 +2633,20 @@ class PatchEntry {
         }
         return patches;
     }
+    decode(palette) {
+        // TODO: Do I need a stride?
+        const buffer = new ArrayBuffer(this.width * this.height * 4);
+        const pixels = new Uint32Array(buffer);
+        let i = 0;
+        for (let x = 0; x < this.width; ++x) {
+            const post = this.posts[x];
+            for (let y = 0; y < post.length; ++y) {
+                const colorIndex = post.data[y];
+                pixels[i] = palette.palette[colorIndex];
+            }
+        }
+        return new Uint8Array(buffer);
+    }
 }
 class PatchPostEntry {
     topdelta;
@@ -2626,5 +2660,28 @@ class PatchPostEntry {
         reader.readU8(); // unused
         this.data = reader.readArray(this.length);
         reader.readU8(); // unused
+    }
+}
+// https://doomwiki.org/wiki/PLAYPAL
+class PaletteEntry {
+    palette;
+    constructor(reader, directoryEntry) {
+        reader.position = directoryEntry.filepos;
+        this.palette = new Uint32Array(256);
+        // Leave index 0 as transparent, since that's how the game treats it.
+        for (let i = 0; i < 256; ++i) {
+            const r = reader.readU8();
+            const g = reader.readU8();
+            const b = reader.readU8();
+            const a = i == 0 ? 0 : 255;
+            this.palette[i] = (a << 24) | (b << 16) | (g << 8) | r;
+        }
+        reader.popPosition();
+    }
+    static read(file, reader) {
+        const directoryIndex = file.directory.findIndex((dir) => dir.name == LumpName.PLAYPAL);
+        if (directoryIndex == -1)
+            throw new Error("Missing PLAYPAL lump");
+        return new PaletteEntry(reader, file.directory[directoryIndex]);
     }
 }

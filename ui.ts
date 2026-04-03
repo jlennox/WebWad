@@ -522,15 +522,22 @@ class MapView3D extends MapView {
         this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix")!;
 
         const positionBuffer = gl.createBuffer();
-        if (positionBuffer == null) throw new Error("Unable to create position buffer");
+        if (positionBuffer == null) throw new Error("Unable to create position buffer.");
         this.positionBuffer = positionBuffer;
 
         const colorBuffer = gl.createBuffer();
-        if (colorBuffer == null) throw new Error("Unable to create color buffer");
+        if (colorBuffer == null) throw new Error("Unable to create color buffer.");
         this.colorBuffer = colorBuffer;
 
         document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
         document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
+
+        UIOverlay.setLowerLeftText(
+            "Move: WASD\n" +
+            "Look: Mouse drag\n" +
+            "Up/down: Space/Z or mouse wheel\n" +
+            "Change level: +/-"
+        );
 
         setInterval(() => this.tick(), 1000 / 60);
 
@@ -666,6 +673,16 @@ class MapView3D extends MapView {
             moved = true;
         }
 
+        if (this.keysDown.has(" ")) {
+            this.cameraPosition.y += 20;
+            moved = true;
+        }
+
+        if (this.keysDown.has("z")) {
+            this.cameraPosition.y -= 20;
+            moved = true;
+        }
+
         if (moved) this.redraw();
     }
 
@@ -727,11 +744,9 @@ class MapView3D extends MapView {
     }
 
     protected override onWheel(event: WheelEvent): void {
-        // Move forward/backward with scroll wheel.
         const moveSpeed = event.shiftKey ? 100 : 30;
-        const direction = event.deltaY < 0 ? 1 : -1;
-        this.cameraPosition.x += Math.sin(this.cameraYaw) * moveSpeed * direction;
-        this.cameraPosition.z += -Math.cos(this.cameraYaw) * moveSpeed * direction;
+        const direction = event.deltaY < 0 ? -1 : 1;
+        this.cameraPosition.y += moveSpeed * direction;
         this.redraw();
     }
 
@@ -739,11 +754,21 @@ class MapView3D extends MapView {
     protected override onMouseDown(_event: MouseEvent): void {}
     protected override onMouseUp(_event: MouseEvent): void {}
     protected override onDoubleClick(_event: MouseEvent): void {}
+    protected override onKeyUp(event: KeyboardEvent): void {}
+}
 
-    protected override onKeyUp(event: KeyboardEvent): void {
-        if (event.key === " ") this.cameraPosition.y += 20;
-        if (event.key === "z") this.cameraPosition.y -= 20;
-        this.redraw();
+class UIOverlay {
+    public static readonly instance = new UIOverlay();
+
+    private readonly lowerleftElement: HTMLDivElement;
+
+    constructor() {
+        this.lowerleftElement = document.querySelector<HTMLDivElement>(".overlay .lowerleft")!;
+        if (this.lowerleftElement == null) throw new Error("Unable to find overlay element.");
+    }
+
+    public static setLowerLeftText(text: string): void {
+        UIOverlay.instance.lowerleftElement.textContent = text;
     }
 }
 

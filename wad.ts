@@ -128,6 +128,7 @@ class WadFile {
     public readonly directory: readonly DirectoryEntry[];
     public readonly maps: readonly MapEntry[];
     public readonly patches: Readonly<{[name: string]: PatchEntry}>;
+    public readonly palette: PaletteEntry;
 
     private readonly reader: BinaryFileReader;
 
@@ -139,6 +140,7 @@ class WadFile {
         this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
         this.maps = MapEntry.readAll(this, this.reader, this.directory);
         this.patches = PatchEntry.readAll(this, this.reader);
+        this.palette = PaletteEntry.read(this, this.reader);
     }
 }
 
@@ -192,6 +194,10 @@ class NodeEntry {
     }
 }
 
+enum LumpName {
+    PLAYPAL = "PLAYPAL",
+}
+
 // "lump"
 class DirectoryEntry {
     public readonly filepos: u32;
@@ -225,7 +231,7 @@ class DirectoryEntry {
         reader.pushPosition(this.filepos);
 
         const end = reader.position + this.size;
-        while (reader.position <= end) {
+        while (reader.position < end) {
             results.push(read(reader));
         }
 
@@ -450,11 +456,11 @@ class SubSectorEntry {
 
     public readonly segments: readonly SegmentEntry[];
 
-    constructor( map: MapEntry, reader: BinaryFileReader) {
+    constructor(map: MapEntry, reader: BinaryFileReader) {
         this.segCount = reader.readI16();
         this.firstSegIndex = reader.readI16();
 
-        this.segments = map.segments.slice(this.firstSegIndex, this.segCount);
+        this.segments = map.segments.slice(this.firstSegIndex, this.firstSegIndex + this.segCount);
     }
 
     public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly SubSectorEntry[] {
@@ -640,6 +646,23 @@ class PatchEntry {
 
         return patches;
     }
+
+    public decode(palette: PaletteEntry): Uint8Array {
+        // TODO: Do I need a stride?
+        const buffer = new ArrayBuffer(this.width * this.height * 4);
+        const pixels = new Uint32Array(buffer);
+
+        let i = 0;
+        for (let x = 0; x < this.width; ++x) {
+            const post = this.posts[x];
+            for (let y = 0; y < post.length; ++y) {
+                const colorIndex = post.data[y];
+                pixels[i] = palette.palette[colorIndex];
+            }
+        }
+
+        return new Uint8Array(buffer);
+    }
 }
 
 class PatchPostEntry {
@@ -655,5 +678,32 @@ class PatchPostEntry {
         reader.readU8(); // unused
         this.data = reader.readArray(this.length);
         reader.readU8(); // unused
+    }
+}
+
+// https://doomwiki.org/wiki/PLAYPAL
+class PaletteEntry {
+    public readonly palette: Uint32Array;
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+        this.palette = new Uint32Array(256);
+        // Leave index 0 as transparent, since that's how the game treats it.
+        for (let i = 0; i < 256; ++i) {
+            const r = reader.readU8();
+            const g = reader.readU8();
+            const b = reader.readU8();
+            const a = i == 0 ? 0 : 255;
+            this.palette[i] = (a << 24) | (b << 16) | (g << 8) | r;
+        }
+
+        reader.popPosition();
+    }
+
+    public static read(file: WadFile, reader: BinaryFileReader): PaletteEntry {
+        const directoryIndex = file.directory.findIndex((dir) => dir.name == LumpName.PLAYPAL);
+        if (directoryIndex == -1) throw new Error("Missing PLAYPAL lump");
+
+        return new PaletteEntry(reader, file.directory[directoryIndex]);
     }
 }

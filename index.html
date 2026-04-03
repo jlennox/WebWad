@@ -13,8 +13,29 @@
                 background-color: black;
                 opacity: .5;
             }
+            .overlay {
+                position: fixed;
+                color: white;
+                font: 12px monospace;
+                pointer-events: none;
+                opacity: 0.7;
+                line-height: 1.6;
+                z-index: 1;
+                text-shadow: -1px 1px 3px pink;
+                white-space: pre-line;
+            }
+            .overlay .lowerleft {
+                position: fixed;
+                bottom: 10px;
+                left: 10px;
+            }
         </style>
     </head>
-    <body><canvas></canvas></body>
+    <body>
+        <canvas></canvas>
+        <div class="overlay">
+            <div class="lowerleft"></div>
+        </div>
+    </body>
     <script src="out.js"></script>
 </html>
