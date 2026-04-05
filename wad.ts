@@ -138,9 +138,12 @@ class WadFile {
     public readonly patches: Map<string, PatchEntry>;
     public readonly flats: Map<string, FlatEntry>;
     public readonly palette: PaletteEntry;
+    public readonly patchNameDirectory: Map<number, DirectoryEntry>;
+    public readonly mapTextures: Map<string, MapTextureEntry>;
 
     private readonly reader: BinaryFileReader;
     private readonly decodeImagesCache = new Map<string, DecodedImage>();
+    private readonly directoryMap: Map<string, DirectoryEntry>;
 
     constructor(file: ArrayBuffer) {
         this.reader = new BinaryFileReader(file);
@@ -148,13 +151,27 @@ class WadFile {
 
         this.reader.seek(this.wadInfo.infotableofs);
         this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
+        this.directoryMap = new Map(this.directory.map((entry) => [entry.name, entry]));
+
         this.maps = MapEntry.readAll(this, this.reader, this.directory);
         this.patches = PatchEntry.readAll(this, this.reader);
         this.palette = PaletteEntry.read(this, this.reader);
         this.flats = FlatEntry.readAll(this, this.reader);
+        this.patchNameDirectory = PatchNamesEntry.read(this, this.reader);
+        this.mapTextures = MapTextureEntry.readAll(this, this.reader);
     }
 
-    public getGraphic(name: string, defaultImage?: DecodedImage): DecodedImage {
+    public getDirectoryEntry(name: LumpName | string): DirectoryEntry {
+        const lump = this.directoryMap.get(name);
+        if (lump == null) throw new Error(`Lump "${name}" not found.`);
+        return lump;
+    }
+
+    public tryGetDirectoryEntry(name: LumpName | string): DirectoryEntry | undefined {
+        return this.directoryMap.get(name);
+    }
+
+    public getImage(name: string, defaultImage?: DecodedImage): DecodedImage {
         if (this.decodeImagesCache.has(name)) {
             return this.decodeImagesCache.get(name)!;
         }
@@ -173,16 +190,22 @@ class WadFile {
             return data;
         }
 
-        for (const entry of this.directory) {
-            if (entry.name == name) {
-                const patch = new PatchEntry(this.reader, entry);
-                const data = patch.decode(this.palette);
-                this.decodeImagesCache.set(name, data);
-                return data;
-            }
+        if (this.directoryMap.has(name)) {
+            const entry = this.directoryMap.get(name)!;
+            const patch = new PatchEntry(this.reader, entry);
+            const data = patch.decode(this.palette);
+            this.decodeImagesCache.set(name, data);
+            return data;
         }
 
-        console.error(`Graphic "${name}" not found`);
+        if (this.mapTextures.has(name)) {
+            const patch = this.mapTextures.get(name)!;
+            const data = patch.decode(this);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+
+        // console.error(`Graphic "${name}" not found`);
         return defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
     }
 }
@@ -239,6 +262,9 @@ class NodeEntry {
 
 enum LumpName {
     PLAYPAL = "PLAYPAL",
+    PNAMES = "PNAMES",
+    TEXTURE1 = "TEXTURE1",
+    TEXTURE2 = "TEXTURE2",
 }
 
 // "lump"
@@ -421,9 +447,9 @@ class SideDefEntry {
     public readonly textureNameMiddle: string;
     public readonly sectorIndex: u16;
 
-    public get textureUpper(): DecodedImage { return this.map.wadFile.getGraphic(this.textureNameUpper); }
-    public get textureLower(): DecodedImage { return this.map.wadFile.getGraphic(this.textureNameLower); }
-    public get textureMiddle(): DecodedImage { return this.map.wadFile.getGraphic(this.textureNameMiddle); }
+    public get textureUpper(): DecodedImage { return this.map.wadFile.getImage(this.textureNameUpper); }
+    public get textureLower(): DecodedImage { return this.map.wadFile.getImage(this.textureNameLower); }
+    public get textureMiddle(): DecodedImage { return this.map.wadFile.getImage(this.textureNameMiddle); }
     public get sector(): SectorEntry { return this.map.sectors[this.sectorIndex]; }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
@@ -450,8 +476,8 @@ class SectorEntry {
     public readonly specialType: i16;
     public readonly tag: i16;
 
-    public get textureFloor(): DecodedImage { return this.map.wadFile.getGraphic(this.textureNameFloor); }
-    public get textureCeiling(): DecodedImage { return this.map.wadFile.getGraphic(this.textureNameCeiling); }
+    public get textureFloor(): DecodedImage { return this.map.wadFile.getImage(this.textureNameFloor); }
+    public get textureCeiling(): DecodedImage { return this.map.wadFile.getImage(this.textureNameCeiling); }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.floorHeight = reader.readI16();
@@ -799,8 +825,6 @@ class PaletteEntry {
             const a = i == 0 ? 0 : 255;
             this.palette[i] = (a << 24) | (b << 16) | (g << 8) | r;
         }
-
-        reader.popPosition();
     }
 
     public static read(file: WadFile, reader: BinaryFileReader): PaletteEntry {
@@ -808,5 +832,157 @@ class PaletteEntry {
         if (directoryIndex == -1) throw new Error("Missing PLAYPAL lump");
 
         return new PaletteEntry(reader, file.directory[directoryIndex]);
+    }
+}
+
+// https://doomwiki.org/wiki/PNAMES
+class PatchNamesEntry {
+    public readonly names: readonly string[];
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+
+        const count = reader.readU32();
+        const names = new Array(count);
+        for (let i = 0; i < count; ++i) {
+            names[i] = reader.readFixedLengthString(8).toUpperCase(); // Lump names are uppercase, but patch names are not always so.
+        }
+
+        this.names = names;
+    }
+
+    public static read(file: WadFile, reader: BinaryFileReader): Map<number, DirectoryEntry> {
+        const entry = file.getDirectoryEntry(LumpName.PNAMES);
+        const patchNamesEntry = new PatchNamesEntry(reader, entry);
+
+        // Build a lookup from the full directory using the FIRST match per name,
+        // since directoryMap can clobber patches with later same-named map lumps.
+        const firstByName = new Map<string, DirectoryEntry>();
+        for (const dirEntry of file.directory) {
+            if (!firstByName.has(dirEntry.name)) {
+                firstByName.set(dirEntry.name, dirEntry);
+            }
+        }
+
+        const map = new Map<number, DirectoryEntry>();
+        for (let i = 0; i < patchNamesEntry.names.length; ++i) {
+            const name = patchNamesEntry.names[i];
+            const dirEntry = firstByName.get(name);
+            if (dirEntry == null) {
+                console.warn(`PNAMES[${i}]: patch "${name}" not found in directory`);
+                continue;
+            }
+            map.set(i, dirEntry);
+        }
+
+        return map;
+    }
+}
+
+class TextureEntry {
+    public readonly count: u32;
+    public readonly offsets: Uint32Array;
+    public readonly textures: readonly MapTextureEntry[];
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+
+        this.count = reader.readU32();
+        this.offsets = reader.readU32Array(this.count);
+
+        const textures = new Array<MapTextureEntry>(this.count);
+        for (let i = 0; i < this.count; ++i) {
+            reader.position = this.offsets[i] + directoryEntry.filepos;
+            textures[i] = new MapTextureEntry(reader);
+        }
+
+        this.textures = textures;
+    }
+}
+
+// https://doomwiki.org/wiki/TEXTURE1_and_TEXTURE2
+class MapTextureEntry {
+    public readonly name: string;
+    public readonly masked: boolean;
+    public readonly width: u16;
+    public readonly height: u16;
+    public readonly columnDirectory: Uint32Array;
+    public readonly patchCount: u16;
+    public readonly patches: readonly MapTexturePatchEntry[];
+
+    constructor(reader: BinaryFileReader) {
+        this.name = reader.readFixedLengthString(8).toUpperCase(); // Lump names are uppercase, but textue names are not always so.
+        this.masked = reader.readU32() != 0;
+        this.width = reader.readU16();
+        this.height = reader.readU16();
+        this.columnDirectory = reader.readU32Array(this.width);
+        this.patchCount = reader.readU16();
+
+        const patches = new Array<MapTexturePatchEntry>(this.patchCount);
+        for (let i = 0; i < this.patchCount; ++i) {
+            patches[i] = new MapTexturePatchEntry(reader);
+        }
+
+        this.patches = patches;
+    }
+
+    public static readAll(file: WadFile, reader: BinaryFileReader): Map<string, MapTextureEntry> {
+        const map = new Map<string, MapTextureEntry>();
+
+        for (const lumpName of [LumpName.TEXTURE1, LumpName.TEXTURE2]) {
+            const entry = file.tryGetDirectoryEntry(lumpName);
+            if (entry == null) continue;
+
+            const textureEntry = new TextureEntry(reader, entry);
+            for (const texture of textureEntry.textures) {
+                map.set(texture.name, texture);
+            }
+        }
+
+        return map;
+    }
+
+    public decode(wadFile: WadFile): DecodedImage {
+        const buffer = new ArrayBuffer(this.width * this.height * 4);
+        const pixels = new Uint32Array(buffer);
+
+        for (const patch of this.patches) {
+            const pname = wadFile.patchNameDirectory.get(patch.patchNameIndex);
+            if (pname == null) {
+                // console.error(`Missing patch name for index ${patch.patchNameIndex}.`);
+                continue;
+            }
+
+            const image = wadFile.getImage(pname.name, FlatEntry.default);
+            const imageU32 = new Uint32Array(image.pixels.buffer);
+            let destinationY = patch.originY;
+            let destinationIndex = destinationY * this.width + patch.originX;
+            let sourceIndex = 0;
+            for (let y = 0; y < image.height; ++y, ++destinationY, ++destinationIndex) {
+                for (let x = 0; x < image.width; ++x, ++destinationIndex, ++sourceIndex) {
+                    pixels[destinationIndex] = imageU32[sourceIndex];
+                }
+
+                destinationIndex = destinationY * this.width + patch.originX;
+            }
+        }
+
+        return new DecodedImage(this.width, this.height, new Uint8Array(buffer));
+    }
+}
+
+class MapTexturePatchEntry {
+    public readonly originX: i16;
+    public readonly originY: i16;
+    public readonly patchNameIndex: i16;
+    public readonly stepdir: i16; // unused
+    public readonly colormap: i16; // unused
+
+    constructor(reader: BinaryFileReader) {
+        this.originX = reader.readI16();
+        this.originY = reader.readI16();
+        this.patchNameIndex = reader.readU16();
+        this.stepdir = reader.readI16();
+        this.colormap = reader.readI16();
     }
 }
