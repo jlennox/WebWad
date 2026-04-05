@@ -451,12 +451,17 @@ class MapView3D extends MapView {
     private readonly shaderProgram: WebGLProgram;
     private readonly positionBuffer: WebGLBuffer;
     private readonly colorBuffer: WebGLBuffer;
+    private readonly texCoordBuffer: WebGLBuffer;
     private readonly aVertexPosition: number;
     private readonly aVertexColor: number;
+    private readonly aTexCoord: number;
     private readonly uProjectionMatrix: WebGLUniformLocation;
     private readonly uModelViewMatrix: WebGLUniformLocation;
+    private readonly uTexture: WebGLUniformLocation;
+    private readonly whiteTexture: WebGLTexture;
+    private readonly textureCache: Map<string, WebGLTexture> = new Map();
 
-    private vertexCount: number = 0;
+    private drawGroups: { textureName: string | null; start: number; count: number }[] = [];
     private cameraPosition = { x: 0, y: 0, z: 0 };
     private cameraYaw: number = 0;
     private cameraPitch: number = 0;
@@ -471,22 +476,28 @@ class MapView3D extends MapView {
         const vsSource = `
             attribute vec3 aVertexPosition;
             attribute vec3 aVertexColor;
+            attribute vec2 aTexCoord;
             uniform mat4 uProjectionMatrix;
             uniform mat4 uModelViewMatrix;
             varying lowp vec3 vColor;
+            varying highp vec2 vTexCoord;
 
             void main() {
                 gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
                 vColor = aVertexColor;
+                vTexCoord = aTexCoord;
             }
         `;
 
         const fsSource = `
             precision lowp float;
             varying lowp vec3 vColor;
+            varying highp vec2 vTexCoord;
+            uniform sampler2D uTexture;
 
             void main() {
-                gl_FragColor = vec4(vColor, 1.0);
+                vec4 texColor = texture2D(uTexture, vTexCoord);
+                gl_FragColor = vec4(vColor * texColor.rgb, texColor.a);
             }
         `;
 
@@ -518,8 +529,10 @@ class MapView3D extends MapView {
 
         this.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
         this.aVertexColor = gl.getAttribLocation(program, "aVertexColor");
+        this.aTexCoord = gl.getAttribLocation(program, "aTexCoord");
         this.uProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix")!;
         this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix")!;
+        this.uTexture = gl.getUniformLocation(program, "uTexture")!;
 
         const positionBuffer = gl.createBuffer();
         if (positionBuffer == null) throw new Error("Unable to create position buffer.");
@@ -528,6 +541,17 @@ class MapView3D extends MapView {
         const colorBuffer = gl.createBuffer();
         if (colorBuffer == null) throw new Error("Unable to create color buffer.");
         this.colorBuffer = colorBuffer;
+
+        const texCoordBuffer = gl.createBuffer();
+        if (texCoordBuffer == null) throw new Error("Unable to create texcoord buffer.");
+        this.texCoordBuffer = texCoordBuffer;
+
+        // 1x1 white texture used for untextured (flat-shaded) geometry.
+        const whiteTexture = gl.createTexture();
+        if (whiteTexture == null) throw new Error("Unable to create white texture.");
+        gl.bindTexture(gl.TEXTURE_2D, whiteTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+        this.whiteTexture = whiteTexture;
 
         document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
         document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
@@ -566,30 +590,122 @@ class MapView3D extends MapView {
         this.redraw();
     }
 
+    private getOrCreateTexture(name: string): WebGLTexture {
+        let texture = this.textureCache.get(name);
+        if (texture != null) return texture;
+
+        const gl = this.gl;
+        const flat = this.wad.getGraphic(name, FlatEntry.default);
+        texture = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+        this.textureCache.set(name, texture);
+        return texture;
+    }
+
     private buildGeometry(): void {
         const gl = this.gl;
         const positions: number[] = [];
         const colors: number[] = [];
+        const texCoords: number[] = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
 
+        // Separate walls (untextured) from textured flats, grouped by texture name.
+        const wallRects: IRectangle[] = [];
+        const texturedGroups: Map<string, IRectangle[]> = new Map();
+
         for (const rect of rectangles) {
-            // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
-            // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
-            const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
-            const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
-            const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
-            const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
+            if (rect.textureName != null) {
+                let group = texturedGroups.get(rect.textureName);
+                if (group == null) {
+                    group = [];
+                    texturedGroups.set(rect.textureName, group);
+                }
+                group.push(rect);
+            } else {
+                wallRects.push(rect);
+            }
+        }
 
-            positions.push(
-                v0x, v0y, v0z,
-                v1x, v1y, v1z,
-                v2x, v2y, v2z,
-                v2x, v2y, v2z,
-                v1x, v1y, v1z,
-                v3x, v3y, v3z,
-            );
+        this.drawGroups = [];
+        let vertexCount = 0;
 
-            // Compute face normal for flat shading.
+        // Emit wall geometry (flat-shaded, no texture).
+        const wallStart = vertexCount;
+        for (const rect of wallRects) {
+            this.emitRect(rect, positions, colors, texCoords, false);
+            vertexCount += 6;
+        }
+        if (vertexCount > wallStart) {
+            this.drawGroups.push({ textureName: null, start: wallStart, count: vertexCount - wallStart });
+        }
+
+        // Emit textured groups (floors/ceilings).
+        for (const [textureName, rects] of texturedGroups) {
+            const groupStart = vertexCount;
+            for (const rect of rects) {
+                this.emitRect(rect, positions, colors, texCoords, true);
+                vertexCount += 6;
+            }
+            this.drawGroups.push({ textureName, start: groupStart, count: vertexCount - groupStart });
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+    }
+
+    private emitRect(
+        rect: IRectangle,
+        positions: number[], colors: number[], texCoords: number[],
+        isTextured: boolean
+    ): void {
+        // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
+        // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
+        const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
+        const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
+        const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
+        const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
+
+        positions.push(
+            v0x, v0y, v0z,
+            v1x, v1y, v1z,
+            v2x, v2y, v2z,
+            v2x, v2y, v2z,
+            v1x, v1y, v1z,
+            v3x, v3y, v3z,
+        );
+
+        if (isTextured) {
+            // Flats tile at 64 world units. UVs use original DOOM x/y coords.
+            const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
+            const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
+            const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
+            const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
+            texCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
+
+            // Use sector light level for brightness.
+            const brightness = (rect.lightLevel ?? 128) / 255;
+            for (let i = 0; i < 6; ++i) {
+                colors.push(brightness, brightness, brightness);
+            }
+        } else {
+            // Untextured walls: UV doesn't matter (white 1x1 texture), use flat shading.
+            for (let i = 0; i < 6; ++i) {
+                texCoords.push(0, 0);
+            }
+
             const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
             const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
             let normalX = edge1y * edge2z - edge1z * edge2y;
@@ -602,45 +718,17 @@ class MapView3D extends MapView {
                 normalZ /= length;
             }
 
-            // Simple directional light from above-right.
             let lightDot = normalX * 0.3 + normalY * 0.7 + normalZ * 0.2;
             if (lightDot < 0) lightDot = -lightDot;
             const brightness = 0.25 + 0.75 * lightDot;
 
-            // Walls get a brownish-gray, floors get darker gray-green, ceilings lighter.
-            const isFlat = Math.abs(normalY) > 0.9;
-            let r: number, g: number, b: number;
-            if (isFlat) {
-                if (normalY > 0) {
-                    // Floor
-                    r = 0.35 * brightness;
-                    g = 0.40 * brightness;
-                    b = 0.30 * brightness;
-                } else {
-                    // Ceiling
-                    r = 0.50 * brightness;
-                    g = 0.50 * brightness;
-                    b = 0.55 * brightness;
-                }
-            } else {
-                // Wall
-                r = 0.55 * brightness;
-                g = 0.45 * brightness;
-                b = 0.35 * brightness;
-            }
-
+            const r = 0.55 * brightness;
+            const g = 0.45 * brightness;
+            const b = 0.35 * brightness;
             for (let i = 0; i < 6; ++i) {
                 colors.push(r, g, b);
             }
         }
-
-        this.vertexCount = positions.length / 3;
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
     }
 
     private tick(): void {
@@ -725,7 +813,22 @@ class MapView3D extends MapView {
         gl.vertexAttribPointer(this.aVertexColor, 3, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(this.aVertexColor);
 
-        gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
+        // Bind tex coord attribute.
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.aTexCoord);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1i(this.uTexture, 0);
+
+        for (const group of this.drawGroups) {
+            if (group.textureName != null) {
+                gl.bindTexture(gl.TEXTURE_2D, this.getOrCreateTexture(group.textureName));
+            } else {
+                gl.bindTexture(gl.TEXTURE_2D, this.whiteTexture);
+            }
+            gl.drawArrays(gl.TRIANGLES, group.start, group.count);
+        }
     }
 
     protected override onMouseMove(event: MouseEvent): void {

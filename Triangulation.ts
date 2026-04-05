@@ -1,7 +1,7 @@
 type IVertex = Readonly<{ x: number; y: number; z: number }>;
 type IVertex2D = Readonly<{ x: number; y: number }>;
 type ITriangle = Readonly<{ v1: IVertex; v2: IVertex; v3: IVertex }>;
-type IRectangle = Readonly<{ x: IVertex; y: IVertex; x2: IVertex; y2: IVertex }>;
+type IRectangle = Readonly<{ x: IVertex; y: IVertex; x2: IVertex; y2: IVertex; textureName?: string; lightLevel?: number }>;
 
 class Triangulation {
     // Rectangles are a compromise because floors require triangles.
@@ -93,13 +93,26 @@ class Triangulation {
                 continue;
             }
 
-            // Triangulation.rectToTriangleHorizontal(triangles, x, y, dx, dy, floorHeight);
             rectangles.push({
                 x: { x: x, y: y, z: floorHeight },
                 y: { x: x, y: dy, z: floorHeight },
                 x2: { x: dx, y: y, z: floorHeight },
-                y2: { x: dx, y: dy, z: floorHeight }
+                y2: { x: dx, y: dy, z: floorHeight },
+                textureName: sector.textureNameFloor,
+                lightLevel: sector.lightLevel,
             });
+
+            // Ceiling. Skip sky textures.
+            if (sector.textureNameCeiling != "F_SKY1") {
+                rectangles.push({
+                    x: { x: x, y: y, z: sector.ceilingHeight },
+                    y: { x: x, y: dy, z: sector.ceilingHeight },
+                    x2: { x: dx, y: y, z: sector.ceilingHeight },
+                    y2: { x: dx, y: dy, z: sector.ceilingHeight },
+                    textureName: sector.textureNameCeiling,
+                    lightLevel: sector.lightLevel,
+                });
+            }
         }
 
         return rectangles;
