@@ -106,6 +106,12 @@ class BinaryFileReader {
         this.position = start + length;
         return result;
     }
+
+    // There's no great way to case-insensitive compare in JavaScript and the cases are mixed between definitions
+    // and references, so just read them as uppercase to be safe.
+    public readFixedLengthStringUppercase(length: number): string {
+        return this.readFixedLengthString(length).toUpperCase();
+    }
 }
 
 enum WadIdentifier {
@@ -172,41 +178,43 @@ class WadFile {
     }
 
     public getImage(name: string, defaultImage?: DecodedImage): DecodedImage {
-        if (this.decodeImagesCache.has(name)) {
-            return this.decodeImagesCache.get(name)!;
-        }
+        const fromCache = this.decodeImagesCache.get(name);
+        if (fromCache != null) return fromCache;
 
-        if (this.flats.has(name)) {
-            const flat = this.flats.get(name)!;
-            const data = flat.decode(this.palette);
+        const fromFlats = this.flats.get(name);
+        if (fromFlats != null) {
+            const data = fromFlats.decode(this.palette);
             this.decodeImagesCache.set(name, data);
             return data;
         }
 
-        if (this.patches.has(name)) {
-            const patch = this.patches.get(name)!;
+        const fromPatches = this.patches.get(name);
+        if (fromPatches != null) {
+            const data = fromPatches.decode(this.palette);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+
+        const fromDirectoryMap = this.directoryMap.get(name);
+        if (fromDirectoryMap != null) {
+            const patch = new PatchEntry(this.reader, fromDirectoryMap);
             const data = patch.decode(this.palette);
             this.decodeImagesCache.set(name, data);
             return data;
         }
 
-        if (this.directoryMap.has(name)) {
-            const entry = this.directoryMap.get(name)!;
-            const patch = new PatchEntry(this.reader, entry);
-            const data = patch.decode(this.palette);
+        const fromMapTexture = this.mapTextures.get(name);
+        if (fromMapTexture != null) {
+            const data = fromMapTexture.decode(this);
             this.decodeImagesCache.set(name, data);
             return data;
         }
 
-        if (this.mapTextures.has(name)) {
-            const patch = this.mapTextures.get(name)!;
-            const data = patch.decode(this);
-            this.decodeImagesCache.set(name, data);
-            return data;
-        }
-
-        // console.error(`Graphic "${name}" not found`);
-        return defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
+        // Cache unfound images so we don't spam the console with errors.
+        console.error(`Image "${name}" not found`);
+        const def = defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
+        this.decodeImagesCache.set(name, def);
+        return def;
     }
 }
 
@@ -278,7 +286,7 @@ class DirectoryEntry {
     constructor(reader: BinaryFileReader) {
         this.filepos = reader.readU32();
         this.size = reader.readU32();
-        this.name = reader.readFixedLengthString(8);
+        this.name = reader.readFixedLengthStringUppercase(8);
     }
 
     public static read(reader: BinaryFileReader, count: number): readonly DirectoryEntry[] {
@@ -455,9 +463,9 @@ class SideDefEntry {
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.textureXOffset = reader.readI16();
         this.textureYOffset = reader.readI16();
-        this.textureNameUpper = reader.readFixedLengthString(8);
-        this.textureNameLower = reader.readFixedLengthString(8);
-        this.textureNameMiddle = reader.readFixedLengthString(8);
+        this.textureNameUpper = reader.readFixedLengthStringUppercase(8);
+        this.textureNameLower = reader.readFixedLengthStringUppercase(8);
+        this.textureNameMiddle = reader.readFixedLengthStringUppercase(8);
         this.sectorIndex = reader.readU16();
     }
 
@@ -482,8 +490,8 @@ class SectorEntry {
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.floorHeight = reader.readI16();
         this.ceilingHeight = reader.readI16();
-        this.textureNameFloor = reader.readFixedLengthString(8);
-        this.textureNameCeiling = reader.readFixedLengthString(8);
+        this.textureNameFloor = reader.readFixedLengthStringUppercase(8);
+        this.textureNameCeiling = reader.readFixedLengthStringUppercase(8);
         this.lightLevel = reader.readI16();
         this.specialType = reader.readI16();
         this.tag = reader.readI16();
@@ -689,9 +697,9 @@ class FlatEntry {
 
     public decode(palette: PaletteEntry): DecodedImage {
         const buffer = new ArrayBuffer(FlatEntry.width * FlatEntry.height * 4);
-        const pixels = new Uint32Array(buffer);
+        const decodedPixels = new Uint32Array(buffer);
         for (let i = 0; i < FlatEntry.width * FlatEntry.height; ++i) {
-            pixels[i] = palette.palette[this.pixels[i]];
+            decodedPixels[i] = palette.palette[this.pixels[i]];
         }
 
         return new DecodedImage(FlatEntry.width, FlatEntry.height, new Uint8Array(buffer));
@@ -734,7 +742,7 @@ class PatchEntry {
     public readonly leftOffset: i16;
     public readonly topOffset: i16;
     public readonly columnofs: Uint32Array;
-    public readonly posts: readonly PatchPostEntry[];
+    public readonly columns: readonly PatchColumn[];
 
     constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
         reader.position = directoryEntry.filepos;
@@ -743,16 +751,26 @@ class PatchEntry {
         this.height = reader.readU16();
         this.leftOffset = reader.readI16();
         this.topOffset = reader.readI16();
-        this.columnofs = reader.readU32Array(this.width);;
+        this.columnofs = reader.readU32Array(this.width);
 
-        // Save position at the end of the patch entry.
         reader.pushPosition();
-        const posts: PatchPostEntry[] = [];
+        const columns: PatchColumn[] = [];
         for (const offset of this.columnofs) {
             reader.position = offset + relative;
-            posts.push(new PatchPostEntry(reader));
+            // Each column is a list of posts terminated by a 0xFF topdelta.
+            const posts: PatchPostEntry[] = [];
+            while (true) {
+                const topdelta = reader.readU8();
+                if (topdelta == 0xFF) break;
+                const length = reader.readU8();
+                reader.readU8(); // unused padding
+                const data = reader.readArray(length);
+                reader.readU8(); // unused padding
+                posts.push(new PatchPostEntry(topdelta, length, data));
+            }
+            columns.push(new PatchColumn(posts));
         }
-        this.posts = posts;
+        this.columns = columns;
         reader.popPosition();
     }
 
@@ -777,16 +795,16 @@ class PatchEntry {
     }
 
     public decode(palette: PaletteEntry): DecodedImage {
-        // TODO: Do I need a stride?
         const buffer = new ArrayBuffer(this.width * this.height * 4);
         const pixels = new Uint32Array(buffer);
 
-        let i = 0;
         for (let x = 0; x < this.width; ++x) {
-            const post = this.posts[x];
-            for (let y = 0; y < post.length; ++y) {
-                const colorIndex = post.data[y];
-                pixels[i] = palette.palette[colorIndex];
+            const column = this.columns[x];
+            for (const post of column.posts) {
+                let destY = post.topdelta * this.width + x;
+                for (let y = 0; y < post.length; ++y, destY += this.width) {
+                    pixels[destY] = palette.palette[post.data[y]];
+                }
             }
         }
 
@@ -794,20 +812,16 @@ class PatchEntry {
     }
 }
 
-class PatchPostEntry {
-    public readonly topdelta: u8;
-    public readonly length: u8;
-    // public readonly unused: u8;
-    public readonly data: Uint8Array;
-    // public readonly unused2: u8;
+class PatchColumn {
+    constructor(public readonly posts: readonly PatchPostEntry[]) {}
+}
 
-    constructor(reader: BinaryFileReader) {
-        this.topdelta = reader.readU8();
-        this.length = reader.readU8();
-        reader.readU8(); // unused
-        this.data = reader.readArray(this.length);
-        reader.readU8(); // unused
-    }
+class PatchPostEntry {
+    constructor(
+        public readonly topdelta: u8,
+        public readonly length: u8,
+        public readonly data: Uint8Array,
+    ) {}
 }
 
 // https://doomwiki.org/wiki/PLAYPAL
@@ -822,16 +836,13 @@ class PaletteEntry {
             const r = reader.readU8();
             const g = reader.readU8();
             const b = reader.readU8();
-            const a = i == 0 ? 0 : 255;
+            const a = 255;
             this.palette[i] = (a << 24) | (b << 16) | (g << 8) | r;
         }
     }
 
     public static read(file: WadFile, reader: BinaryFileReader): PaletteEntry {
-        const directoryIndex = file.directory.findIndex((dir) => dir.name == LumpName.PLAYPAL);
-        if (directoryIndex == -1) throw new Error("Missing PLAYPAL lump");
-
-        return new PaletteEntry(reader, file.directory[directoryIndex]);
+        return new PaletteEntry(reader, file.getDirectoryEntry(LumpName.PLAYPAL));
     }
 }
 
@@ -845,7 +856,7 @@ class PatchNamesEntry {
         const count = reader.readU32();
         const names = new Array(count);
         for (let i = 0; i < count; ++i) {
-            names[i] = reader.readFixedLengthString(8).toUpperCase(); // Lump names are uppercase, but patch names are not always so.
+            names[i] = reader.readFixedLengthStringUppercase(8);
         }
 
         this.names = names;
@@ -906,16 +917,15 @@ class MapTextureEntry {
     public readonly masked: boolean;
     public readonly width: u16;
     public readonly height: u16;
-    public readonly columnDirectory: Uint32Array;
     public readonly patchCount: u16;
     public readonly patches: readonly MapTexturePatchEntry[];
 
     constructor(reader: BinaryFileReader) {
-        this.name = reader.readFixedLengthString(8).toUpperCase(); // Lump names are uppercase, but textue names are not always so.
+        this.name = reader.readFixedLengthStringUppercase(8);
         this.masked = reader.readU32() != 0;
         this.width = reader.readU16();
         this.height = reader.readU16();
-        this.columnDirectory = reader.readU32Array(this.width);
+        reader.readU32(); // unused
         this.patchCount = reader.readU16();
 
         const patches = new Array<MapTexturePatchEntry>(this.patchCount);
@@ -949,21 +959,28 @@ class MapTextureEntry {
         for (const patch of this.patches) {
             const pname = wadFile.patchNameDirectory.get(patch.patchNameIndex);
             if (pname == null) {
-                // console.error(`Missing patch name for index ${patch.patchNameIndex}.`);
+                console.error(`Missing patch name for index ${patch.patchNameIndex}.`);
                 continue;
             }
 
-            const image = wadFile.getImage(pname.name, FlatEntry.default);
-            const imageU32 = new Uint32Array(image.pixels.buffer);
-            let destinationY = patch.originY;
-            let destinationIndex = destinationY * this.width + patch.originX;
+            const source = wadFile.getImage(pname.name, FlatEntry.default);
+            const sourceU32 = new Uint32Array(source.pixels.buffer);
             let sourceIndex = 0;
-            for (let y = 0; y < image.height; ++y, ++destinationY, ++destinationIndex) {
-                for (let x = 0; x < image.width; ++x, ++destinationIndex, ++sourceIndex) {
-                    pixels[destinationIndex] = imageU32[sourceIndex];
+            for (let y = 0; y < source.height; ++y) {
+                const destY = patch.originY + y;
+                if (destY < 0 || destY >= this.height) {
+                    sourceIndex += source.width;
+                    continue;
                 }
 
-                destinationIndex = destinationY * this.width + patch.originX;
+                let destIndex = destY * this.width + patch.originX;
+                for (let x = 0; x < source.width; ++x, ++destIndex, ++sourceIndex) {
+                    const destX = patch.originX + x;
+                    if (destX < 0 || destX >= this.width) continue;
+
+                    const pixel = sourceU32[sourceIndex];
+                    pixels[destIndex] = pixel;
+                }
             }
         }
 

@@ -57,6 +57,17 @@ class Matrix {
     }
 }
 class Triangulation {
+    static findSidedefTexture(right, left, getter) {
+        const rightName = getter(right);
+        if (rightName != "-")
+            return { textureName: rightName, sidedef: right };
+        if (left != null) {
+            const leftName = getter(left);
+            if (leftName != "-")
+                return { textureName: leftName, sidedef: left };
+        }
+        return null;
+    }
     // Rectangles are a compromise because floors require triangles.
     // This exists for experimental types of rendering that require rectangles.
     static getRectangles(map) {
@@ -64,42 +75,62 @@ class Triangulation {
         for (const linedef of map.linedefs) {
             const a = linedef.vertexA;
             const b = linedef.vertexB;
-            const sectorLeft = linedef.sidedefLeft?.sector;
-            const sectorRight = linedef.sidedefRight?.sector;
+            const sidedefRight = linedef.sidedefRight;
+            const sidedefLeft = linedef.sidedefLeft;
+            const sectorLeft = sidedefLeft?.sector;
+            const sectorRight = sidedefRight?.sector;
+            // Single-sided wall: full wall from floor to ceiling.
             if (sectorLeft == null || sectorRight == null) {
-                // Single-sided wall: full wall from floor to ceiling.
-                const sector = sectorLeft ?? sectorRight;
-                if (sector == null)
+                const sidedef = sidedefRight ?? sidedefLeft;
+                const sector = sectorRight ?? sectorLeft;
+                if (sector == null || sidedef == null)
                     continue;
                 rectangles.push({
                     x: { x: a.x, y: a.y, z: sector.floorHeight },
                     y: { x: a.x, y: a.y, z: sector.ceilingHeight },
                     x2: { x: b.x, y: b.y, z: sector.floorHeight },
-                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight }
+                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight },
+                    textureName: sidedef.textureNameMiddle,
+                    lightLevel: sector.lightLevel,
+                    textureOffsetX: sidedef.textureXOffset,
+                    textureOffsetY: sidedef.textureYOffset,
                 });
+                continue;
             }
-            else {
-                // Two-sided wall: draw walls where heights differ.
-                var lowerFloor = Math.min(sectorLeft.floorHeight, sectorRight.floorHeight);
-                var upperFloor = Math.max(sectorLeft.floorHeight, sectorRight.floorHeight);
-                var lowerCeiling = Math.min(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
-                var upperCeiling = Math.max(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
-                // Lower wall (step-up between different floor heights).
-                if (upperFloor > lowerFloor) {
+            // Two-sided wall: draw walls where heights differ.
+            // Lower wall (step-up between different floor heights).
+            if (sectorLeft.floorHeight != sectorRight.floorHeight) {
+                const lowerZ = Math.min(sectorLeft.floorHeight, sectorRight.floorHeight);
+                const upperZ = Math.max(sectorLeft.floorHeight, sectorRight.floorHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefRight, sidedefLeft, (s) => s.textureNameLower);
+                if (sidedef != null) {
                     rectangles.push({
-                        x: { x: a.x, y: a.y, z: lowerFloor },
-                        y: { x: a.x, y: a.y, z: upperFloor },
-                        x2: { x: b.x, y: b.y, z: lowerFloor },
-                        y2: { x: b.x, y: b.y, z: upperFloor }
+                        x: { x: a.x, y: a.y, z: lowerZ },
+                        y: { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: sidedef.textureName,
+                        lightLevel: sidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: sidedef.sidedef.textureXOffset,
+                        textureOffsetY: sidedef.sidedef.textureYOffset,
                     });
                 }
-                // Upper wall (between different ceiling heights).
-                if (upperCeiling > lowerCeiling) {
+            }
+            // Upper wall (between different ceiling heights).
+            if (sectorLeft.ceilingHeight != sectorRight.ceilingHeight) {
+                const lowerZ = Math.min(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
+                const upperZ = Math.max(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefRight, sidedefLeft, (s) => s.textureNameUpper);
+                if (sidedef != null) {
                     rectangles.push({
-                        x: { x: a.x, y: a.y, z: lowerCeiling },
-                        y: { x: a.x, y: a.y, z: upperCeiling },
-                        x2: { x: b.x, y: b.y, z: lowerCeiling },
-                        y2: { x: b.x, y: b.y, z: upperCeiling }
+                        x: { x: a.x, y: a.y, z: lowerZ },
+                        y: { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: sidedef.textureName,
+                        lightLevel: sidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: sidedef.sidedef.textureXOffset,
+                        textureOffsetY: sidedef.sidedef.textureYOffset,
                     });
                 }
             }
@@ -1958,6 +1989,7 @@ class MapView3D extends MapView {
         if (texCoordBuffer == null)
             throw new Error("Unable to create texcoord buffer.");
         this.texCoordBuffer = texCoordBuffer;
+        // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         // 1x1 white texture used for untextured (flat-shaded) geometry.
         const whiteTexture = gl.createTexture();
         if (whiteTexture == null)
@@ -1999,7 +2031,7 @@ class MapView3D extends MapView {
         if (texture != null)
             return texture;
         const gl = this.gl;
-        const flat = this.wad.getGraphic(name, FlatEntry.default);
+        const flat = this.wad.getImage(name, FlatEntry.default);
         texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
@@ -2020,17 +2052,16 @@ class MapView3D extends MapView {
         const wallRects = [];
         const texturedGroups = new Map();
         for (const rect of rectangles) {
-            if (rect.textureName != null) {
-                let group = texturedGroups.get(rect.textureName);
-                if (group == null) {
-                    group = [];
-                    texturedGroups.set(rect.textureName, group);
-                }
-                group.push(rect);
-            }
-            else {
+            if (rect.textureName == null || rect.textureName == "-") {
                 wallRects.push(rect);
+                continue;
             }
+            let group = texturedGroups.get(rect.textureName);
+            if (group == null) {
+                group = [];
+                texturedGroups.set(rect.textureName, group);
+            }
+            group.push(rect);
         }
         this.drawGroups = [];
         let vertexCount = 0;
@@ -2067,21 +2098,45 @@ class MapView3D extends MapView {
         const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
         const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
         positions.push(v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z, v2x, v2y, v2z, v1x, v1y, v1z, v3x, v3y, v3z);
-        if (isTextured) {
-            // Flats tile at 64 world units. UVs use original DOOM x/y coords.
+        const brightness = (rect.lightLevel ?? 128) / 255;
+        const isWall = rect.textureOffsetX != null;
+        if (isTextured && isWall) {
+            // Wall UVs: U = distance along linedef, V = height position.
+            const linedefLength = Math.sqrt((rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2);
+            const wallHeight = rect.y.z - rect.x.z;
+            const graphic = this.wad.getImage(rect.textureName);
+            const textureWidth = graphic.width || 64;
+            const textureHeight = graphic.height || 64;
+            const offsetU = rect.textureOffsetX / textureWidth;
+            const offsetV = rect.textureOffsetY / textureHeight;
+            const uLeft = offsetU;
+            const uRight = offsetU + linedefLength / textureWidth;
+            const vTop = offsetV;
+            const vBottom = offsetV + wallHeight / textureHeight;
+            // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
+            texCoords.push(uLeft, vBottom, // v0: A floor
+            uLeft, vTop, // v1: A ceiling
+            uRight, vBottom, // v2: B floor
+            uRight, vBottom, // v2: B floor
+            uLeft, vTop, // v1: A ceiling
+            uRight, vTop);
+            for (let i = 0; i < 6; ++i) {
+                colors.push(brightness, brightness, brightness);
+            }
+        }
+        else if (isTextured) {
+            // Flat UVs: tile at 64 world units using original DOOM x/y coords.
             const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
             const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
             const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
             const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
             texCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
-            // Use sector light level for brightness.
-            const brightness = (rect.lightLevel ?? 128) / 255;
             for (let i = 0; i < 6; ++i) {
                 colors.push(brightness, brightness, brightness);
             }
         }
         else {
-            // Untextured walls: UV doesn't matter (white 1x1 texture), use flat shading.
+            // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
             for (let i = 0; i < 6; ++i) {
                 texCoords.push(0, 0);
             }
@@ -2096,15 +2151,10 @@ class MapView3D extends MapView {
                 normalY /= length;
                 normalZ /= length;
             }
-            let lightDot = normalX * 0.3 + normalY * 0.7 + normalZ * 0.2;
-            if (lightDot < 0)
-                lightDot = -lightDot;
-            const brightness = 0.25 + 0.75 * lightDot;
-            const r = 0.55 * brightness;
-            const g = 0.45 * brightness;
-            const b = 0.35 * brightness;
+            const lightDot = Math.abs(normalX * 0.3 + normalY * 0.7 + normalZ * 0.2);
+            const wallBrightness = 0.25 + 0.75 * lightDot;
             for (let i = 0; i < 6; ++i) {
-                colors.push(r, g, b);
+                colors.push(0.55 * wallBrightness, 0.45 * wallBrightness, 0.35 * wallBrightness);
             }
         }
     }
@@ -2317,6 +2367,11 @@ class BinaryFileReader {
         this.position = start + length;
         return result;
     }
+    // There's no great way to case-insensitive compare in JavaScript and the cases are mixed between definitions
+    // and references, so just read them as uppercase to be safe.
+    readFixedLengthStringUppercase(length) {
+        return this.readFixedLengthString(length).toUpperCase();
+    }
 }
 var WadIdentifier;
 (function (WadIdentifier) {
@@ -2345,44 +2400,67 @@ class WadFile {
     patches;
     flats;
     palette;
+    patchNameDirectory;
+    mapTextures;
     reader;
     decodeImagesCache = new Map();
+    directoryMap;
     constructor(file) {
         this.reader = new BinaryFileReader(file);
         this.wadInfo = new WadHeader(this.reader);
         this.reader.seek(this.wadInfo.infotableofs);
         this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
+        this.directoryMap = new Map(this.directory.map((entry) => [entry.name, entry]));
         this.maps = MapEntry.readAll(this, this.reader, this.directory);
         this.patches = PatchEntry.readAll(this, this.reader);
         this.palette = PaletteEntry.read(this, this.reader);
         this.flats = FlatEntry.readAll(this, this.reader);
+        this.patchNameDirectory = PatchNamesEntry.read(this, this.reader);
+        this.mapTextures = MapTextureEntry.readAll(this, this.reader);
     }
-    getGraphic(name, defaultImage) {
-        if (this.decodeImagesCache.has(name)) {
-            return this.decodeImagesCache.get(name);
-        }
-        if (this.flats.has(name)) {
-            const flat = this.flats.get(name);
-            const data = flat.decode(this.palette);
+    getDirectoryEntry(name) {
+        const lump = this.directoryMap.get(name);
+        if (lump == null)
+            throw new Error(`Lump "${name}" not found.`);
+        return lump;
+    }
+    tryGetDirectoryEntry(name) {
+        return this.directoryMap.get(name);
+    }
+    getImage(name, defaultImage) {
+        const fromCache = this.decodeImagesCache.get(name);
+        if (fromCache != null)
+            return fromCache;
+        const fromFlats = this.flats.get(name);
+        if (fromFlats != null) {
+            const data = fromFlats.decode(this.palette);
             this.decodeImagesCache.set(name, data);
             return data;
         }
-        if (this.patches.has(name)) {
-            const patch = this.patches.get(name);
+        const fromPatches = this.patches.get(name);
+        if (fromPatches != null) {
+            const data = fromPatches.decode(this.palette);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+        const fromDirectoryMap = this.directoryMap.get(name);
+        if (fromDirectoryMap != null) {
+            const patch = new PatchEntry(this.reader, fromDirectoryMap);
             const data = patch.decode(this.palette);
             this.decodeImagesCache.set(name, data);
             return data;
         }
-        for (const entry of this.directory) {
-            if (entry.name == name) {
-                const patch = new PatchEntry(this.reader, entry);
-                const data = patch.decode(this.palette);
-                this.decodeImagesCache.set(name, data);
-                return data;
-            }
+        const fromMapTexture = this.mapTextures.get(name);
+        if (fromMapTexture != null) {
+            const data = fromMapTexture.decode(this);
+            this.decodeImagesCache.set(name, data);
+            return data;
         }
-        console.error(`Graphic "${name}" not found`);
-        return defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
+        // Cache unfound images so we don't spam the console with errors.
+        console.error(`Image "${name}" not found`);
+        const def = defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
+        this.decodeImagesCache.set(name, def);
+        return def;
     }
 }
 class BoundingBox {
@@ -2431,6 +2509,9 @@ class NodeEntry {
 var LumpName;
 (function (LumpName) {
     LumpName["PLAYPAL"] = "PLAYPAL";
+    LumpName["PNAMES"] = "PNAMES";
+    LumpName["TEXTURE1"] = "TEXTURE1";
+    LumpName["TEXTURE2"] = "TEXTURE2";
 })(LumpName || (LumpName = {}));
 // "lump"
 class DirectoryEntry {
@@ -2441,7 +2522,7 @@ class DirectoryEntry {
     constructor(reader) {
         this.filepos = reader.readU32();
         this.size = reader.readU32();
-        this.name = reader.readFixedLengthString(8);
+        this.name = reader.readFixedLengthStringUppercase(8);
     }
     static read(reader, count) {
         const entries = [];
@@ -2562,17 +2643,17 @@ class SideDefEntry {
     textureNameLower;
     textureNameMiddle;
     sectorIndex;
-    get textureUpper() { return this.map.wadFile.getGraphic(this.textureNameUpper); }
-    get textureLower() { return this.map.wadFile.getGraphic(this.textureNameLower); }
-    get textureMiddle() { return this.map.wadFile.getGraphic(this.textureNameMiddle); }
+    get textureUpper() { return this.map.wadFile.getImage(this.textureNameUpper); }
+    get textureLower() { return this.map.wadFile.getImage(this.textureNameLower); }
+    get textureMiddle() { return this.map.wadFile.getImage(this.textureNameMiddle); }
     get sector() { return this.map.sectors[this.sectorIndex]; }
     constructor(map, reader) {
         this.map = map;
         this.textureXOffset = reader.readI16();
         this.textureYOffset = reader.readI16();
-        this.textureNameUpper = reader.readFixedLengthString(8);
-        this.textureNameLower = reader.readFixedLengthString(8);
-        this.textureNameMiddle = reader.readFixedLengthString(8);
+        this.textureNameUpper = reader.readFixedLengthStringUppercase(8);
+        this.textureNameLower = reader.readFixedLengthStringUppercase(8);
+        this.textureNameMiddle = reader.readFixedLengthStringUppercase(8);
         this.sectorIndex = reader.readU16();
     }
     static readAll(map, entry, reader) {
@@ -2589,14 +2670,14 @@ class SectorEntry {
     lightLevel;
     specialType;
     tag;
-    get textureFloor() { return this.map.wadFile.getGraphic(this.textureNameFloor); }
-    get textureCeiling() { return this.map.wadFile.getGraphic(this.textureNameCeiling); }
+    get textureFloor() { return this.map.wadFile.getImage(this.textureNameFloor); }
+    get textureCeiling() { return this.map.wadFile.getImage(this.textureNameCeiling); }
     constructor(map, reader) {
         this.map = map;
         this.floorHeight = reader.readI16();
         this.ceilingHeight = reader.readI16();
-        this.textureNameFloor = reader.readFixedLengthString(8);
-        this.textureNameCeiling = reader.readFixedLengthString(8);
+        this.textureNameFloor = reader.readFixedLengthStringUppercase(8);
+        this.textureNameCeiling = reader.readFixedLengthStringUppercase(8);
         this.lightLevel = reader.readI16();
         this.specialType = reader.readI16();
         this.tag = reader.readI16();
@@ -2747,9 +2828,9 @@ class FlatEntry {
     }
     decode(palette) {
         const buffer = new ArrayBuffer(FlatEntry.width * FlatEntry.height * 4);
-        const pixels = new Uint32Array(buffer);
+        const decodedPixels = new Uint32Array(buffer);
         for (let i = 0; i < FlatEntry.width * FlatEntry.height; ++i) {
-            pixels[i] = palette.palette[this.pixels[i]];
+            decodedPixels[i] = palette.palette[this.pixels[i]];
         }
         return new DecodedImage(FlatEntry.width, FlatEntry.height, new Uint8Array(buffer));
     }
@@ -2788,7 +2869,7 @@ class PatchEntry {
     leftOffset;
     topOffset;
     columnofs;
-    posts;
+    columns;
     constructor(reader, directoryEntry) {
         reader.position = directoryEntry.filepos;
         const relative = reader.position;
@@ -2797,15 +2878,25 @@ class PatchEntry {
         this.leftOffset = reader.readI16();
         this.topOffset = reader.readI16();
         this.columnofs = reader.readU32Array(this.width);
-        ;
-        // Save position at the end of the patch entry.
         reader.pushPosition();
-        const posts = [];
+        const columns = [];
         for (const offset of this.columnofs) {
             reader.position = offset + relative;
-            posts.push(new PatchPostEntry(reader));
+            // Each column is a list of posts terminated by a 0xFF topdelta.
+            const posts = [];
+            while (true) {
+                const topdelta = reader.readU8();
+                if (topdelta == 0xFF)
+                    break;
+                const length = reader.readU8();
+                reader.readU8(); // unused padding
+                const data = reader.readArray(length);
+                reader.readU8(); // unused padding
+                posts.push(new PatchPostEntry(topdelta, length, data));
+            }
+            columns.push(new PatchColumn(posts));
         }
-        this.posts = posts;
+        this.columns = columns;
         reader.popPosition();
     }
     static readAll(file, reader) {
@@ -2826,32 +2917,34 @@ class PatchEntry {
         return patches;
     }
     decode(palette) {
-        // TODO: Do I need a stride?
         const buffer = new ArrayBuffer(this.width * this.height * 4);
         const pixels = new Uint32Array(buffer);
-        let i = 0;
         for (let x = 0; x < this.width; ++x) {
-            const post = this.posts[x];
-            for (let y = 0; y < post.length; ++y) {
-                const colorIndex = post.data[y];
-                pixels[i] = palette.palette[colorIndex];
+            const column = this.columns[x];
+            for (const post of column.posts) {
+                let destY = post.topdelta * this.width + x;
+                for (let y = 0; y < post.length; ++y, destY += this.width) {
+                    pixels[destY] = palette.palette[post.data[y]];
+                }
             }
         }
         return new DecodedImage(this.width, this.height, new Uint8Array(buffer));
     }
 }
+class PatchColumn {
+    posts;
+    constructor(posts) {
+        this.posts = posts;
+    }
+}
 class PatchPostEntry {
     topdelta;
     length;
-    // public readonly unused: u8;
     data;
-    // public readonly unused2: u8;
-    constructor(reader) {
-        this.topdelta = reader.readU8();
-        this.length = reader.readU8();
-        reader.readU8(); // unused
-        this.data = reader.readArray(this.length);
-        reader.readU8(); // unused
+    constructor(topdelta, length, data) {
+        this.topdelta = topdelta;
+        this.length = length;
+        this.data = data;
     }
 }
 // https://doomwiki.org/wiki/PLAYPAL
@@ -2865,15 +2958,142 @@ class PaletteEntry {
             const r = reader.readU8();
             const g = reader.readU8();
             const b = reader.readU8();
-            const a = i == 0 ? 0 : 255;
+            const a = 255;
             this.palette[i] = (a << 24) | (b << 16) | (g << 8) | r;
         }
-        reader.popPosition();
     }
     static read(file, reader) {
-        const directoryIndex = file.directory.findIndex((dir) => dir.name == LumpName.PLAYPAL);
-        if (directoryIndex == -1)
-            throw new Error("Missing PLAYPAL lump");
-        return new PaletteEntry(reader, file.directory[directoryIndex]);
+        return new PaletteEntry(reader, file.getDirectoryEntry(LumpName.PLAYPAL));
+    }
+}
+// https://doomwiki.org/wiki/PNAMES
+class PatchNamesEntry {
+    names;
+    constructor(reader, directoryEntry) {
+        reader.position = directoryEntry.filepos;
+        const count = reader.readU32();
+        const names = new Array(count);
+        for (let i = 0; i < count; ++i) {
+            names[i] = reader.readFixedLengthStringUppercase(8);
+        }
+        this.names = names;
+    }
+    static read(file, reader) {
+        const entry = file.getDirectoryEntry(LumpName.PNAMES);
+        const patchNamesEntry = new PatchNamesEntry(reader, entry);
+        // Build a lookup from the full directory using the FIRST match per name,
+        // since directoryMap can clobber patches with later same-named map lumps.
+        const firstByName = new Map();
+        for (const dirEntry of file.directory) {
+            if (!firstByName.has(dirEntry.name)) {
+                firstByName.set(dirEntry.name, dirEntry);
+            }
+        }
+        const map = new Map();
+        for (let i = 0; i < patchNamesEntry.names.length; ++i) {
+            const name = patchNamesEntry.names[i];
+            const dirEntry = firstByName.get(name);
+            if (dirEntry == null) {
+                console.warn(`PNAMES[${i}]: patch "${name}" not found in directory`);
+                continue;
+            }
+            map.set(i, dirEntry);
+        }
+        return map;
+    }
+}
+class TextureEntry {
+    count;
+    offsets;
+    textures;
+    constructor(reader, directoryEntry) {
+        reader.position = directoryEntry.filepos;
+        this.count = reader.readU32();
+        this.offsets = reader.readU32Array(this.count);
+        const textures = new Array(this.count);
+        for (let i = 0; i < this.count; ++i) {
+            reader.position = this.offsets[i] + directoryEntry.filepos;
+            textures[i] = new MapTextureEntry(reader);
+        }
+        this.textures = textures;
+    }
+}
+// https://doomwiki.org/wiki/TEXTURE1_and_TEXTURE2
+class MapTextureEntry {
+    name;
+    masked;
+    width;
+    height;
+    patchCount;
+    patches;
+    constructor(reader) {
+        this.name = reader.readFixedLengthStringUppercase(8);
+        this.masked = reader.readU32() != 0;
+        this.width = reader.readU16();
+        this.height = reader.readU16();
+        reader.readU32(); // unused
+        this.patchCount = reader.readU16();
+        const patches = new Array(this.patchCount);
+        for (let i = 0; i < this.patchCount; ++i) {
+            patches[i] = new MapTexturePatchEntry(reader);
+        }
+        this.patches = patches;
+    }
+    static readAll(file, reader) {
+        const map = new Map();
+        for (const lumpName of [LumpName.TEXTURE1, LumpName.TEXTURE2]) {
+            const entry = file.tryGetDirectoryEntry(lumpName);
+            if (entry == null)
+                continue;
+            const textureEntry = new TextureEntry(reader, entry);
+            for (const texture of textureEntry.textures) {
+                map.set(texture.name, texture);
+            }
+        }
+        return map;
+    }
+    decode(wadFile) {
+        const buffer = new ArrayBuffer(this.width * this.height * 4);
+        const pixels = new Uint32Array(buffer);
+        for (const patch of this.patches) {
+            const pname = wadFile.patchNameDirectory.get(patch.patchNameIndex);
+            if (pname == null) {
+                console.error(`Missing patch name for index ${patch.patchNameIndex}.`);
+                continue;
+            }
+            const source = wadFile.getImage(pname.name, FlatEntry.default);
+            const sourceU32 = new Uint32Array(source.pixels.buffer);
+            let sourceIndex = 0;
+            for (let y = 0; y < source.height; ++y) {
+                const destY = patch.originY + y;
+                if (destY < 0 || destY >= this.height) {
+                    sourceIndex += source.width;
+                    continue;
+                }
+                let destIndex = destY * this.width + patch.originX;
+                for (let x = 0; x < source.width; ++x, ++destIndex, ++sourceIndex) {
+                    const destX = patch.originX + x;
+                    if (destX < 0 || destX >= this.width)
+                        continue;
+                    const pixel = sourceU32[sourceIndex];
+                    pixels[destIndex] = pixel;
+                }
+            }
+        }
+        return new DecodedImage(this.width, this.height, new Uint8Array(buffer));
+    }
+}
+class MapTexturePatchEntry {
+    originX;
+    originY;
+    patchNameIndex;
+    stepdir; // unused
+    colormap; // unused
+    constructor(reader) {
+        this.originX = reader.readI16();
+        this.originY = reader.readI16();
+        this.patchNameIndex = reader.readU16();
+        this.stepdir = reader.readI16();
+        this.colormap = reader.readI16();
     }
 }

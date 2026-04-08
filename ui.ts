@@ -546,6 +546,8 @@ class MapView3D extends MapView {
         if (texCoordBuffer == null) throw new Error("Unable to create texcoord buffer.");
         this.texCoordBuffer = texCoordBuffer;
 
+        // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
         // 1x1 white texture used for untextured (flat-shaded) geometry.
         const whiteTexture = gl.createTexture();
         if (whiteTexture == null) throw new Error("Unable to create white texture.");
@@ -595,7 +597,7 @@ class MapView3D extends MapView {
         if (texture != null) return texture;
 
         const gl = this.gl;
-        const flat = this.wad.getGraphic(name, FlatEntry.default);
+        const flat = this.wad.getImage(name, FlatEntry.default);
         texture = gl.createTexture()!;
         gl.bindTexture(gl.TEXTURE_2D, texture);
 
@@ -621,16 +623,17 @@ class MapView3D extends MapView {
         const texturedGroups: Map<string, IRectangle[]> = new Map();
 
         for (const rect of rectangles) {
-            if (rect.textureName != null) {
-                let group = texturedGroups.get(rect.textureName);
-                if (group == null) {
-                    group = [];
-                    texturedGroups.set(rect.textureName, group);
-                }
-                group.push(rect);
-            } else {
+            if (rect.textureName == null || rect.textureName == "-") {
                 wallRects.push(rect);
+                continue;
             }
+
+            let group = texturedGroups.get(rect.textureName);
+            if (group == null) {
+                group = [];
+                texturedGroups.set(rect.textureName, group);
+            }
+            group.push(rect);
         }
 
         this.drawGroups = [];
@@ -687,21 +690,52 @@ class MapView3D extends MapView {
             v3x, v3y, v3z,
         );
 
-        if (isTextured) {
-            // Flats tile at 64 world units. UVs use original DOOM x/y coords.
+        const brightness = (rect.lightLevel ?? 128) / 255;
+        const isWall = rect.textureOffsetX != null;
+
+        if (isTextured && isWall) {
+            // Wall UVs: U = distance along linedef, V = height position.
+            const linedefLength = Math.sqrt(
+                (rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2
+            );
+            const wallHeight = rect.y.z - rect.x.z;
+            const graphic = this.wad.getImage(rect.textureName!);
+            const textureWidth = graphic.width || 64;
+            const textureHeight = graphic.height || 64;
+            const offsetU = rect.textureOffsetX! / textureWidth;
+            const offsetV = rect.textureOffsetY! / textureHeight;
+
+            const uLeft = offsetU;
+            const uRight = offsetU + linedefLength / textureWidth;
+            const vTop = offsetV;
+            const vBottom = offsetV + wallHeight / textureHeight;
+
+            // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
+            texCoords.push(
+                uLeft, vBottom,   // v0: A floor
+                uLeft, vTop,      // v1: A ceiling
+                uRight, vBottom,  // v2: B floor
+                uRight, vBottom,  // v2: B floor
+                uLeft, vTop,      // v1: A ceiling
+                uRight, vTop,     // v3: B ceiling
+            );
+
+            for (let i = 0; i < 6; ++i) {
+                colors.push(brightness, brightness, brightness);
+            }
+        } else if (isTextured) {
+            // Flat UVs: tile at 64 world units using original DOOM x/y coords.
             const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
             const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
             const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
             const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
             texCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
 
-            // Use sector light level for brightness.
-            const brightness = (rect.lightLevel ?? 128) / 255;
             for (let i = 0; i < 6; ++i) {
                 colors.push(brightness, brightness, brightness);
             }
         } else {
-            // Untextured walls: UV doesn't matter (white 1x1 texture), use flat shading.
+            // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
             for (let i = 0; i < 6; ++i) {
                 texCoords.push(0, 0);
             }
@@ -718,15 +752,10 @@ class MapView3D extends MapView {
                 normalZ /= length;
             }
 
-            let lightDot = normalX * 0.3 + normalY * 0.7 + normalZ * 0.2;
-            if (lightDot < 0) lightDot = -lightDot;
-            const brightness = 0.25 + 0.75 * lightDot;
-
-            const r = 0.55 * brightness;
-            const g = 0.45 * brightness;
-            const b = 0.35 * brightness;
+            const lightDot = Math.abs(normalX * 0.3 + normalY * 0.7 + normalZ * 0.2);
+            const wallBrightness = 0.25 + 0.75 * lightDot;
             for (let i = 0; i < 6; ++i) {
-                colors.push(r, g, b);
+                colors.push(0.55 * wallBrightness, 0.45 * wallBrightness, 0.35 * wallBrightness);
             }
         }
     }
