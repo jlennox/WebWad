@@ -56,6 +56,15 @@ class Matrix {
         };
     }
 }
+var SurfaceType;
+(function (SurfaceType) {
+    SurfaceType[SurfaceType["Floor"] = 0] = "Floor";
+    SurfaceType[SurfaceType["Ceiling"] = 1] = "Ceiling";
+    SurfaceType[SurfaceType["Wall"] = 2] = "Wall";
+    SurfaceType[SurfaceType["LowerWall"] = 3] = "LowerWall";
+    SurfaceType[SurfaceType["UpperWall"] = 4] = "UpperWall";
+    SurfaceType[SurfaceType["MiddleWall"] = 5] = "MiddleWall";
+})(SurfaceType || (SurfaceType = {}));
 class Triangulation {
     static findSidedefTexture(right, left, getter) {
         const rightName = getter(right);
@@ -68,21 +77,20 @@ class Triangulation {
         }
         return null;
     }
-    // Rectangles are a compromise because floors require triangles.
-    // This exists for experimental types of rendering that require rectangles.
+    // This should ultimately return triangles, but for simplicity, it currently returns rectangles.
     static getRectangles(map) {
         let rectangles = [];
         for (const linedef of map.linedefs) {
-            const a = linedef.vertexA;
-            const b = linedef.vertexB;
-            const sidedefRight = linedef.sidedefRight;
-            const sidedefLeft = linedef.sidedefLeft;
-            const sectorLeft = sidedefLeft?.sector;
-            const sectorRight = sidedefRight?.sector;
+            const b = linedef.vertexA;
+            const a = linedef.vertexB;
+            const sidedefFont = linedef.sidedefFont;
+            const sidedefBack = linedef.sidedefBack;
+            const sectorFront = sidedefFont?.sector;
+            const sectorBack = sidedefBack?.sector;
             // Single-sided wall: full wall from floor to ceiling.
-            if (sectorLeft == null || sectorRight == null) {
-                const sidedef = sidedefRight ?? sidedefLeft;
-                const sector = sectorRight ?? sectorLeft;
+            if (sectorBack == null || sectorFront == null) {
+                const sidedef = sidedefFont ?? sidedefBack;
+                const sector = sectorFront ?? sectorBack;
                 if (sector == null || sidedef == null)
                     continue;
                 rectangles.push({
@@ -94,15 +102,16 @@ class Triangulation {
                     lightLevel: sector.lightLevel,
                     textureOffsetX: sidedef.textureXOffset,
                     textureOffsetY: sidedef.textureYOffset,
+                    type: SurfaceType.Wall,
                 });
                 continue;
             }
             // Two-sided wall: draw walls where heights differ.
             // Lower wall (step-up between different floor heights).
-            if (sectorLeft.floorHeight != sectorRight.floorHeight) {
-                const lowerZ = Math.min(sectorLeft.floorHeight, sectorRight.floorHeight);
-                const upperZ = Math.max(sectorLeft.floorHeight, sectorRight.floorHeight);
-                const sidedef = Triangulation.findSidedefTexture(sidedefRight, sidedefLeft, (s) => s.textureNameLower);
+            if (sectorBack.floorHeight != sectorFront.floorHeight) {
+                const lowerZ = Math.min(sectorBack.floorHeight, sectorFront.floorHeight);
+                const upperZ = Math.max(sectorBack.floorHeight, sectorFront.floorHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameLower);
                 if (sidedef != null) {
                     rectangles.push({
                         x: { x: a.x, y: a.y, z: lowerZ },
@@ -113,14 +122,15 @@ class Triangulation {
                         lightLevel: sidedef.sidedef.sector.lightLevel,
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
+                        type: SurfaceType.LowerWall,
                     });
                 }
             }
             // Upper wall (between different ceiling heights).
-            if (sectorLeft.ceilingHeight != sectorRight.ceilingHeight) {
-                const lowerZ = Math.min(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
-                const upperZ = Math.max(sectorLeft.ceilingHeight, sectorRight.ceilingHeight);
-                const sidedef = Triangulation.findSidedefTexture(sidedefRight, sidedefLeft, (s) => s.textureNameUpper);
+            if (sectorBack.ceilingHeight != sectorFront.ceilingHeight) {
+                const lowerZ = Math.min(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
+                const upperZ = Math.max(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameUpper);
                 if (sidedef != null) {
                     rectangles.push({
                         x: { x: a.x, y: a.y, z: lowerZ },
@@ -131,6 +141,7 @@ class Triangulation {
                         lightLevel: sidedef.sidedef.sector.lightLevel,
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
+                        type: SurfaceType.UpperWall,
                     });
                 }
             }
@@ -169,25 +180,27 @@ class Triangulation {
                 dy == Number.NEGATIVE_INFINITY) {
                 continue;
             }
+            // Floor.
+            // x2/y are swapped from ceiling so texture faces into the sector.
             rectangles.push({
                 x: { x: x, y: y, z: floorHeight },
-                y: { x: x, y: dy, z: floorHeight },
-                x2: { x: dx, y: y, z: floorHeight },
+                x2: { x: x, y: dy, z: floorHeight },
+                y: { x: dx, y: y, z: floorHeight },
                 y2: { x: dx, y: dy, z: floorHeight },
                 textureName: sector.textureNameFloor,
                 lightLevel: sector.lightLevel,
+                type: SurfaceType.Floor,
             });
-            // Ceiling. Skip sky textures.
-            if (sector.textureNameCeiling != "F_SKY1") {
-                rectangles.push({
-                    x: { x: x, y: y, z: sector.ceilingHeight },
-                    y: { x: x, y: dy, z: sector.ceilingHeight },
-                    x2: { x: dx, y: y, z: sector.ceilingHeight },
-                    y2: { x: dx, y: dy, z: sector.ceilingHeight },
-                    textureName: sector.textureNameCeiling,
-                    lightLevel: sector.lightLevel,
-                });
-            }
+            // Ceiling.
+            rectangles.push({
+                x: { x: x, y: y, z: sector.ceilingHeight },
+                y: { x: x, y: dy, z: sector.ceilingHeight },
+                x2: { x: dx, y: y, z: sector.ceilingHeight },
+                y2: { x: dx, y: dy, z: sector.ceilingHeight },
+                textureName: sector.textureNameCeiling,
+                lightLevel: sector.lightLevel,
+                type: SurfaceType.Ceiling,
+            });
         }
         return rectangles;
     }
@@ -1549,14 +1562,16 @@ class UserFileInput {
 // We only ever want a single client area sized canvas, and we want it to destroy and recreate
 // because we may switch the context type.
 class GlobalCanvas {
+    static canvases = new Map();
     element;
+    get isActive() { return this.element.hidden == false; }
     get width() { return this._width; }
     get height() { return this._height; }
     _width;
     _height;
-    constructor(onResize) {
-        document.querySelector("canvas")?.remove();
+    constructor(name, onResize) {
         this.element = document.createElement("canvas");
+        this.element.setAttribute("data-canvas-name", name);
         this.element.style.position = "fixed";
         this.element.width = window.innerWidth;
         this.element.height = window.innerHeight;
@@ -1571,12 +1586,25 @@ class GlobalCanvas {
             onResize?.(e);
         });
     }
+    static get(name, onResize) {
+        const existing = GlobalCanvas.canvases.get(name);
+        if (existing != null)
+            return existing;
+        const instance = new GlobalCanvas(name, onResize);
+        GlobalCanvas.canvases.set(name, instance);
+        return instance;
+    }
     getContext(contextId, options) {
         return this.element.getContext(contextId, options);
     }
+    activate() {
+        for (let [_, canvas] of GlobalCanvas.canvases) {
+            canvas.element.hidden = canvas != this;
+        }
+    }
 }
 class UserFileInputUI {
-    canvas = new GlobalCanvas(() => this.draw());
+    canvas = GlobalCanvas.get("UserFileInputUI", (() => this.draw()));
     constructor(ctor) {
         const wad = new Promise((resolve, _reject) => {
             this.canvas.element.addEventListener("dblclick", async (_event) => {
@@ -1601,8 +1629,30 @@ class UserFileInputUI {
             });
         });
         wad.then((wad) => {
-            const mapView = ctor(wad);
-            mapView.displayLevel(0);
+            for (const canvas of document.querySelectorAll("canvas"))
+                canvas.remove();
+            let mapViewIndex = 0;
+            const mapViews = ctor(wad);
+            let previousMapView = mapViews[0];
+            function updateShownMapView() {
+                const nextMapview = mapViews[mapViewIndex];
+                // Avoid state thrashing when possible.
+                if (previousMapView.levelIndex != nextMapview.levelIndex || nextMapview.levelIndex < 0) {
+                    nextMapview.displayLevel(Math.max(previousMapView.levelIndex, 0));
+                    console.info(`Showing ${nextMapview.name} + ${nextMapview.levelIndex}`);
+                }
+                nextMapview.activate();
+                console.info(`Showing ${nextMapview.name}`);
+                previousMapView = nextMapview;
+            }
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Tab") {
+                    e.preventDefault();
+                    mapViewIndex = (mapViewIndex + 1) % mapViews.length;
+                    updateShownMapView();
+                }
+            });
+            updateShownMapView();
         });
         this.draw();
     }
@@ -1641,28 +1691,53 @@ class UserFileInputUI {
     }
 }
 class MapView {
+    name;
     wad;
-    canvas = new GlobalCanvas();
+    canvas;
     isMouseDown = false;
     currentMap;
-    levelIndex = 0;
+    levelIndex = -1;
     awaitingRender = false;
-    constructor(wad) {
+    constructor(name, wad) {
+        this.name = name;
         this.wad = wad;
+        this.canvas = GlobalCanvas.get(name);
         this.currentMap = this.wad.maps[0];
-        document.addEventListener("wheel", (e) => this.onWheel(e));
-        window.addEventListener("resize", (e) => this.onResize(e));
+        document.addEventListener("wheel", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onWheel(e);
+        });
+        window.addEventListener("resize", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onResize(e);
+        });
         this.canvas.element.addEventListener("mousedown", (e) => {
+            if (!this.canvas.isActive)
+                return;
             this.isMouseDown = true;
             this.onMouseDown(e);
         });
         this.canvas.element.addEventListener("mouseup", (e) => {
+            if (!this.canvas.isActive)
+                return;
             this.isMouseDown = false;
             this.onMouseUp(e);
         });
-        this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
+        this.canvas.element.addEventListener("mousemove", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onMouseMove(e);
+        });
+        this.canvas.element.addEventListener("dblclick", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onDoubleClick(e);
+        });
         document.addEventListener("keyup", (e) => {
+            if (!this.canvas.isActive)
+                return;
             switch (e.key) {
                 case "-":
                     if (this.levelIndex == 0) {
@@ -1697,7 +1772,7 @@ class MapView2D extends MapView {
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
     constructor(wad) {
-        super(wad);
+        super("MapView2D", wad);
         this.resetValues();
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
@@ -1869,6 +1944,7 @@ class MapView2D extends MapView {
         context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
     }
     async displayLevel(index) {
+        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.resetValues();
         const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
@@ -1878,6 +1954,13 @@ class MapView2D extends MapView {
             // this.redraw();
         }
         this.fitLevelToView(this.currentMap);
+    }
+    activate() {
+        this.canvas.activate();
+        UIOverlay.setLowerLeftText("Tab: Switch to 3D\n" +
+            "Pan: Mouse drag\n" +
+            "Zoom: Mouse wheel\n" +
+            "Change level: +/-");
     }
     fitLevelToView(map) {
         const bb = LinedefEntry.getBoundingBox(map.linedefs);
@@ -1900,7 +1983,7 @@ class MapView3D extends MapView {
     shaderProgram;
     positionBuffer;
     colorBuffer;
-    texCoordBuffer;
+    textureCoordBuffer;
     aVertexPosition;
     aVertexColor;
     aTexCoord;
@@ -1915,7 +1998,7 @@ class MapView3D extends MapView {
     cameraPitch = 0;
     keysDown = new Set();
     constructor(wad) {
-        super(wad);
+        super("MapView3D", wad);
         const gl = this.canvas.getContext("webgl");
         if (gl === null)
             throw new Error("WebGL not available.");
@@ -1985,10 +2068,10 @@ class MapView3D extends MapView {
         if (colorBuffer == null)
             throw new Error("Unable to create color buffer.");
         this.colorBuffer = colorBuffer;
-        const texCoordBuffer = gl.createBuffer();
-        if (texCoordBuffer == null)
+        const textureCoordBuffer = gl.createBuffer();
+        if (textureCoordBuffer == null)
             throw new Error("Unable to create texcoord buffer.");
-        this.texCoordBuffer = texCoordBuffer;
+        this.textureCoordBuffer = textureCoordBuffer;
         // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         // 1x1 white texture used for untextured (flat-shaded) geometry.
         const whiteTexture = gl.createTexture();
@@ -1999,14 +2082,11 @@ class MapView3D extends MapView {
         this.whiteTexture = whiteTexture;
         document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
         document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
-        UIOverlay.setLowerLeftText("Move: WASD\n" +
-            "Look: Mouse drag\n" +
-            "Up/down: Space/Z or mouse wheel\n" +
-            "Change level: +/-");
         setInterval(() => this.tick(), 1000 / 60);
         this.redraw();
     }
     async displayLevel(index) {
+        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.buildGeometry();
         const playerStart = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
@@ -2026,7 +2106,17 @@ class MapView3D extends MapView {
         this.cameraPitch = 0;
         this.redraw();
     }
-    getOrCreateTexture(name) {
+    activate() {
+        this.canvas.activate();
+        UIOverlay.setLowerLeftText("Tab: Switch to 2D\n" +
+            "Move: WASD\n" +
+            "Look: Mouse drag\n" +
+            "Up/down: Space/Z or mouse wheel\n" +
+            "Change level: +/-");
+    }
+    getTexture(name) {
+        if (name == null || name == "-")
+            return this.whiteTexture;
         let texture = this.textureCache.get(name);
         if (texture != null)
             return texture;
@@ -2046,7 +2136,7 @@ class MapView3D extends MapView {
         const gl = this.gl;
         const positions = [];
         const colors = [];
-        const texCoords = [];
+        const textureCoords = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
         // Separate walls (untextured) from textured flats, grouped by texture name.
         const wallRects = [];
@@ -2068,7 +2158,7 @@ class MapView3D extends MapView {
         // Emit wall geometry (flat-shaded, no texture).
         const wallStart = vertexCount;
         for (const rect of wallRects) {
-            this.emitRect(rect, positions, colors, texCoords, false);
+            this.emitRect(rect, positions, colors, textureCoords, false);
             vertexCount += 6;
         }
         if (vertexCount > wallStart) {
@@ -2078,7 +2168,7 @@ class MapView3D extends MapView {
         for (const [textureName, rects] of texturedGroups) {
             const groupStart = vertexCount;
             for (const rect of rects) {
-                this.emitRect(rect, positions, colors, texCoords, true);
+                this.emitRect(rect, positions, colors, textureCoords, true);
                 vertexCount += 6;
             }
             this.drawGroups.push({ textureName, start: groupStart, count: vertexCount - groupStart });
@@ -2087,10 +2177,10 @@ class MapView3D extends MapView {
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
     }
-    emitRect(rect, positions, colors, texCoords, isTextured) {
+    emitRect(rect, positions, colors, textureCoords, isTextured) {
         // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
         // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
         const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
@@ -2114,7 +2204,7 @@ class MapView3D extends MapView {
             const vTop = offsetV;
             const vBottom = offsetV + wallHeight / textureHeight;
             // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
-            texCoords.push(uLeft, vBottom, // v0: A floor
+            textureCoords.push(uLeft, vBottom, // v0: A floor
             uLeft, vTop, // v1: A ceiling
             uRight, vBottom, // v2: B floor
             uRight, vBottom, // v2: B floor
@@ -2130,7 +2220,7 @@ class MapView3D extends MapView {
             const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
             const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
             const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
-            texCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
+            textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
             for (let i = 0; i < 6; ++i) {
                 colors.push(brightness, brightness, brightness);
             }
@@ -2138,7 +2228,7 @@ class MapView3D extends MapView {
         else {
             // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
             for (let i = 0; i < 6; ++i) {
-                texCoords.push(0, 0);
+                textureCoords.push(0, 0);
             }
             const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
             const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
@@ -2204,6 +2294,8 @@ class MapView3D extends MapView {
         gl.enable(gl.DEPTH_TEST);
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
         gl.useProgram(this.shaderProgram);
         // Projection matrix.
         const projectionMatrix = mat4.create();
@@ -2229,18 +2321,13 @@ class MapView3D extends MapView {
         gl.vertexAttribPointer(this.aVertexColor, 3, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(this.aVertexColor);
         // Bind tex coord attribute.
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
         gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(this.aTexCoord);
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this.uTexture, 0);
         for (const group of this.drawGroups) {
-            if (group.textureName != null) {
-                gl.bindTexture(gl.TEXTURE_2D, this.getOrCreateTexture(group.textureName));
-            }
-            else {
-                gl.bindTexture(gl.TEXTURE_2D, this.whiteTexture);
-            }
+            gl.bindTexture(gl.TEXTURE_2D, this.getTexture(group.textureName));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
         }
     }
@@ -2282,7 +2369,7 @@ class UIOverlay {
         UIOverlay.instance.lowerleftElement.textContent = text;
     }
 }
-const _fileinput = new UserFileInputUI((wad) => new MapView3D(wad));
+const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView3D(wad)]);
 class BinaryFileReader {
     position = 0;
     u8;
@@ -2589,12 +2676,12 @@ class LinedefEntry {
     flags; // u16
     linetype;
     tag;
-    sidedefRightIndex;
-    sidedefLeftIndex;
+    sidedefFrontIndex;
+    sidedefBackIndex;
     get vertexA() { return this.map.vertexes[this.vertexAIndex]; }
     get vertexB() { return this.map.vertexes[this.vertexBIndex]; }
-    get sidedefRight() { return this.map.sidedefs[this.sidedefRightIndex]; }
-    get sidedefLeft() { return this.sidedefLeftIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefLeftIndex]; }
+    get sidedefFont() { return this.map.sidedefs[this.sidedefFrontIndex]; }
+    get sidedefBack() { return this.sidedefBackIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefBackIndex]; }
     constructor(map, reader) {
         this.map = map;
         this.vertexAIndex = reader.readU16();
@@ -2602,8 +2689,8 @@ class LinedefEntry {
         this.flags = reader.readU16();
         this.linetype = reader.readU16();
         this.tag = reader.readU16();
-        this.sidedefRightIndex = reader.readU16();
-        this.sidedefLeftIndex = reader.readU16();
+        this.sidedefFrontIndex = reader.readU16();
+        this.sidedefBackIndex = reader.readU16();
     }
     hasFlag(flag) {
         return (this.flags & flag) == flag;
@@ -2755,7 +2842,7 @@ class MapEntry {
     getLinedefsPerSector() {
         const linedefsPerSector = {};
         for (const linedef of this.linedefs) {
-            for (const sidedef of [linedef.sidedefLeft, linedef.sidedefRight]) {
+            for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null)
                     continue;
                 let linedefs = linedefsPerSector[sidedef.sectorIndex];
@@ -3097,3 +3184,4 @@ class MapTexturePatchEntry {
         this.colormap = reader.readI16();
     }
 }
+//# sourceMappingURL=out.js.map

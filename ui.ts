@@ -26,7 +26,11 @@ class UserFileInput {
 // We only ever want a single client area sized canvas, and we want it to destroy and recreate
 // because we may switch the context type.
 class GlobalCanvas {
+    private static readonly canvases: Map<string, GlobalCanvas> = new Map();
+
     public readonly element: HTMLCanvasElement;
+
+    public get isActive(): boolean { return this.element.hidden == false; }
 
     public get width(): number { return this._width; }
     public get height(): number { return this._height; }
@@ -34,10 +38,9 @@ class GlobalCanvas {
     private _width: number;
     private _height: number;
 
-    constructor(onResize?: (event: UIEvent) => void) {
-        document.querySelector("canvas")?.remove();
-
+    private constructor(name: string, onResize?: (event: UIEvent) => void) {
         this.element = document.createElement("canvas");
+        this.element.setAttribute("data-canvas-name", name)
         this.element.style.position = "fixed";
         this.element.width  = window.innerWidth;
         this.element.height = window.innerHeight;
@@ -56,6 +59,15 @@ class GlobalCanvas {
         });
     }
 
+    public static get(name: string, onResize?: (event: UIEvent) => void): GlobalCanvas {
+        const existing = GlobalCanvas.canvases.get(name);
+        if (existing != null) return existing;
+
+        const instance = new GlobalCanvas(name, onResize);
+        GlobalCanvas.canvases.set(name, instance);
+        return instance;
+    }
+
     public getContext(contextId: "2d", options?: CanvasRenderingContext2DSettings): CanvasRenderingContext2D | null;
     public getContext(contextId: "bitmaprenderer", options?: ImageBitmapRenderingContextSettings): ImageBitmapRenderingContext | null;
     public getContext(contextId: "webgl", options?: WebGLContextAttributes): WebGLRenderingContext | null;
@@ -63,12 +75,18 @@ class GlobalCanvas {
     public getContext(contextId: string, options?: any): RenderingContext | null {
         return this.element.getContext(contextId, options);
     }
+
+    public activate(): void {
+        for (let [_, canvas] of GlobalCanvas.canvases) {
+            canvas.element.hidden = canvas != this;
+        }
+    }
 }
 
 class UserFileInputUI {
-    private readonly canvas: GlobalCanvas = new GlobalCanvas(() => this.draw());
+    private readonly canvas: GlobalCanvas = GlobalCanvas.get("UserFileInputUI", (() => this.draw()));
 
-    constructor(ctor: (wad: WadFile) => MapView) {
+    constructor(ctor: (wad: WadFile) => readonly MapView[]) {
         const wad = new Promise<WadFile>((resolve, _reject) => {
             this.canvas.element.addEventListener("dblclick", async (_event) => {
                 try {
@@ -94,8 +112,38 @@ class UserFileInputUI {
         });
 
         wad.then((wad) => {
-            const mapView = ctor(wad);
-            mapView.displayLevel(0);
+            for (const canvas of document.querySelectorAll("canvas")) canvas.remove();
+
+            let mapViewIndex = 0;
+            const mapViews = ctor(wad);
+
+            let previousMapView = mapViews[0];
+
+            function updateShownMapView(): void {
+                const nextMapview = mapViews[mapViewIndex];
+
+                // Avoid state thrashing when possible.
+                if (previousMapView.levelIndex != nextMapview.levelIndex || nextMapview.levelIndex < 0) {
+                    nextMapview.displayLevel(Math.max(previousMapView.levelIndex, 0));
+                    console.info(`Showing ${nextMapview.name} + ${nextMapview.levelIndex}`);
+                }
+
+                nextMapview.activate();
+                console.info(`Showing ${nextMapview.name}`);
+
+                previousMapView = nextMapview;
+            }
+
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Tab") {
+                    e.preventDefault();
+
+                    mapViewIndex = (mapViewIndex + 1) % mapViews.length;
+                    updateShownMapView();
+                }
+            });
+
+            updateShownMapView();
         });
 
         this.draw();
@@ -140,29 +188,54 @@ class UserFileInputUI {
 }
 
 abstract class MapView {
-    protected readonly canvas: GlobalCanvas = new GlobalCanvas();
+    protected readonly canvas: GlobalCanvas;
     protected isMouseDown: boolean = false;
     protected currentMap: MapEntry;
 
-    private levelIndex: number = 0;
+    public levelIndex: number = -1;
     private awaitingRender: boolean = false;
 
-    constructor(protected readonly wad: WadFile) {
+    protected constructor(
+        public readonly name: string,
+        protected readonly wad: WadFile)
+    {
+        this.canvas = GlobalCanvas.get(name);
         this.currentMap = this.wad.maps[0];
 
-        document.addEventListener("wheel", (e) => this.onWheel(e));
-        window.addEventListener("resize", (e) => this.onResize(e));
+        document.addEventListener("wheel", (e) => {
+            if (!this.canvas.isActive) return;
+            this.onWheel(e);
+        });
+
+        window.addEventListener("resize", (e) => {
+            if (!this.canvas.isActive) return;
+            this.onResize(e);
+        });
+
         this.canvas.element.addEventListener("mousedown", (e) => {
+            if (!this.canvas.isActive) return;
             this.isMouseDown = true;
             this.onMouseDown(e);
         });
+
         this.canvas.element.addEventListener("mouseup", (e) => {
+            if (!this.canvas.isActive) return;
             this.isMouseDown = false;
             this.onMouseUp(e);
         });
-        this.canvas.element.addEventListener("mousemove", (e) => this.onMouseMove(e));
-        this.canvas.element.addEventListener("dblclick", (e) => this.onDoubleClick(e));
+
+        this.canvas.element.addEventListener("mousemove", (e) => {
+            if (!this.canvas.isActive) return;
+            this.onMouseMove(e);
+        });
+
+        this.canvas.element.addEventListener("dblclick", (e) => {
+            if (!this.canvas.isActive) return;
+            this.onDoubleClick(e);
+        });
+
         document.addEventListener("keyup", (e) => {
+            if (!this.canvas.isActive) return;
             switch (e.key) {
                 case "-":
                     if (this.levelIndex == 0) {
@@ -182,6 +255,8 @@ abstract class MapView {
             this.onKeyUp(e);
         });
     }
+
+    public abstract activate(): void;
 
     protected redraw(): void {
         if (this.awaitingRender) return;
@@ -213,7 +288,7 @@ class MapView2D extends MapView {
     private dashedStrokeOffset: number = 0;
 
     constructor(wad: WadFile) {
-        super(wad);
+        super("MapView2D", wad);
         this.resetValues();
 
         setInterval(() => {
@@ -412,6 +487,7 @@ class MapView2D extends MapView {
     }
 
     public override async displayLevel(index: number): Promise<void> {
+        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.resetValues();
 
@@ -423,6 +499,17 @@ class MapView2D extends MapView {
         }
 
         this.fitLevelToView(this.currentMap);
+    }
+
+    public override activate(): void {
+        this.canvas.activate();
+
+        UIOverlay.setLowerLeftText(
+            "Tab: Switch to 3D\n" +
+            "Pan: Mouse drag\n" +
+            "Zoom: Mouse wheel\n" +
+            "Change level: +/-"
+        );
     }
 
     private fitLevelToView(map: MapEntry): void {
@@ -468,7 +555,7 @@ class MapView3D extends MapView {
     private readonly keysDown: Set<string> = new Set<string>();
 
     constructor(wad: WadFile) {
-        super(wad);
+        super("MapView3D", wad);
         const gl = this.canvas.getContext("webgl");
         if (gl === null) throw new Error("WebGL not available.");
         this.gl = gl;
@@ -558,19 +645,13 @@ class MapView3D extends MapView {
         document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
         document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
 
-        UIOverlay.setLowerLeftText(
-            "Move: WASD\n" +
-            "Look: Mouse drag\n" +
-            "Up/down: Space/Z or mouse wheel\n" +
-            "Change level: +/-"
-        );
-
         setInterval(() => this.tick(), 1000 / 60);
 
         this.redraw();
     }
 
     public override async displayLevel(index: number): Promise<void> {
+        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.buildGeometry();
 
@@ -590,6 +671,17 @@ class MapView3D extends MapView {
         this.cameraPitch = 0;
 
         this.redraw();
+    }
+
+    public override activate(): void {
+        this.canvas.activate();
+        UIOverlay.setLowerLeftText(
+            "Tab: Switch to 2D\n" +
+            "Move: WASD\n" +
+            "Look: Mouse drag\n" +
+            "Up/down: Space/Z or mouse wheel\n" +
+            "Change level: +/-"
+        );
     }
 
     private getTexture(name: string | null): WebGLTexture {
@@ -907,4 +999,4 @@ class UIOverlay {
     }
 }
 
-const _fileinput = new UserFileInputUI((wad) => new MapView3D(wad));
+const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView3D(wad)]);
