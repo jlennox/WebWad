@@ -49,6 +49,841 @@ class HitTester {
         return null;
     }
 }
+class UserFileInput {
+    constructor(target, loaded) {
+        target.addEventListener("dragover", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+        });
+        target.addEventListener("dragleave", (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+        });
+        target.addEventListener("drop", (event) => {
+            event.preventDefault();
+            const file = event.dataTransfer.files[0];
+            const reader = new FileReader();
+            reader.addEventListener("loadend", (_loadEvent) => {
+                loaded(reader.result);
+            });
+            reader.readAsArrayBuffer(file);
+        });
+    }
+}
+class UserFileInputUI {
+    canvas = GlobalCanvas.get("UserFileInputUI", (() => this.draw()));
+    constructor(ctor) {
+        const wad = new Promise((resolve, _reject) => {
+            this.canvas.element.addEventListener("dblclick", async (_event) => {
+                try {
+                    this.canvas.element.classList.add("loading");
+                    const response = await fetch("./doom1.wad");
+                    if (response.status != 200) {
+                        alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
+                        return;
+                    }
+                    const blob = await response.blob();
+                    resolve(new WadFile(await blob.arrayBuffer()));
+                }
+                finally {
+                    this.canvas.element.classList.remove("loading");
+                }
+            });
+            new UserFileInput(this.canvas.element, (file) => {
+                const wad = new WadFile(file);
+                console.log("wad", wad);
+                resolve(wad);
+            });
+        });
+        wad.then((wad) => {
+            for (const canvas of document.querySelectorAll("canvas"))
+                canvas.remove();
+            let mapViewIndex = 0;
+            const mapViews = ctor(wad);
+            let previousMapView = mapViews[0];
+            function updateShownMapView() {
+                const nextMapview = mapViews[mapViewIndex];
+                // Avoid state thrashing when possible.
+                if (previousMapView.levelIndex != nextMapview.levelIndex || nextMapview.levelIndex < 0) {
+                    nextMapview.displayLevel(Math.max(previousMapView.levelIndex, 0));
+                    console.info(`Showing ${nextMapview.name} + ${nextMapview.levelIndex}`);
+                }
+                nextMapview.activate();
+                console.info(`Showing ${nextMapview.name}`);
+                previousMapView = nextMapview;
+            }
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Tab") {
+                    e.preventDefault();
+                    mapViewIndex = (mapViewIndex + 1) % mapViews.length;
+                    updateShownMapView();
+                }
+            });
+            updateShownMapView();
+        });
+        this.draw();
+    }
+    draw() {
+        const context = this.canvas.getContext("2d");
+        if (context == null)
+            throw new Error("Unable to get 2d context");
+        function drawCentered(text, width, height) {
+            const metrics = context.measureText(text);
+            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
+            context.fillText(text, width / 2 - metrics.width / 2, height / 2 - actualHeight / 2, width);
+        }
+        function drawBottomLeft(text, width, height) {
+            const lines = text.split("\n");
+            const linePadding = 5;
+            let yoffset = 0;
+            const heights = lines.map((t) => {
+                const metrics = context.measureText(t);
+                const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + linePadding;
+                yoffset += height;
+                return height;
+            });
+            for (let i = 0; i < lines.length; ++i) {
+                const line = lines[i];
+                context.fillText(line, 0, height - yoffset, width);
+                yoffset -= heights[i];
+            }
+        }
+        context.setTransform(undefined);
+        context.font = "40px serif";
+        drawCentered("Drag & Drop WAD", this.canvas.width, this.canvas.height);
+        context.font = "20px serif";
+        drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
+        context.font = "20px serif";
+        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+    }
+}
+/// <reference path="UserFileInput.ts" />
+// We only ever want a single client area sized canvas, and we want it to destroy and recreate
+// because we may switch the context type.
+class GlobalCanvas {
+    static canvases = new Map();
+    element;
+    get isActive() { return this.element.hidden == false; }
+    get width() { return this._width; }
+    get height() { return this._height; }
+    _width;
+    _height;
+    constructor(name, onResize) {
+        this.element = document.createElement("canvas");
+        this.element.setAttribute("data-canvas-name", name);
+        this.element.style.position = "fixed";
+        this.element.width = window.innerWidth;
+        this.element.height = window.innerHeight;
+        this._width = this.element.width;
+        this._height = this.element.height;
+        document.body.appendChild(this.element);
+        window.addEventListener("resize", (e) => {
+            this.element.width = window.innerWidth;
+            this.element.height = window.innerHeight;
+            this._width = this.element.width;
+            this._height = this.element.height;
+            onResize?.(e);
+        });
+    }
+    static get(name, onResize) {
+        const existing = GlobalCanvas.canvases.get(name);
+        if (existing != null)
+            return existing;
+        const instance = new GlobalCanvas(name, onResize);
+        GlobalCanvas.canvases.set(name, instance);
+        return instance;
+    }
+    getContext(contextId, options) {
+        return this.element.getContext(contextId, options);
+    }
+    activate() {
+        for (let [_, canvas] of GlobalCanvas.canvases) {
+            canvas.element.hidden = canvas != this;
+        }
+    }
+}
+class MapView {
+    name;
+    wad;
+    canvas;
+    isMouseDown = false;
+    currentMap;
+    levelIndex = -1;
+    awaitingRender = false;
+    constructor(name, wad) {
+        this.name = name;
+        this.wad = wad;
+        this.canvas = GlobalCanvas.get(name);
+        this.currentMap = this.wad.maps[0];
+        document.addEventListener("wheel", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onWheel(e);
+        });
+        window.addEventListener("resize", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onResize(e);
+        });
+        this.canvas.element.addEventListener("mousedown", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.isMouseDown = true;
+            this.onMouseDown(e);
+        });
+        this.canvas.element.addEventListener("mouseup", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.isMouseDown = false;
+            this.onMouseUp(e);
+        });
+        this.canvas.element.addEventListener("mousemove", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onMouseMove(e);
+        });
+        this.canvas.element.addEventListener("dblclick", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onDoubleClick(e);
+        });
+        document.addEventListener("keyup", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            switch (e.key) {
+                case "-":
+                    if (this.levelIndex == 0) {
+                        this.levelIndex = this.wad.maps.length - 1;
+                    }
+                    else {
+                        --this.levelIndex;
+                    }
+                    this.displayLevel(this.levelIndex);
+                    break;
+                case "+":
+                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
+                    this.displayLevel(this.levelIndex);
+                    break;
+            }
+            this.onKeyUp(e);
+        });
+    }
+    redraw() {
+        if (this.awaitingRender)
+            return;
+        this.awaitingRender = true;
+        requestAnimationFrame(() => {
+            this.draw();
+            this.awaitingRender = false;
+        });
+    }
+}
+class UIOverlay {
+    static instance = new UIOverlay();
+    lowerleftElement;
+    constructor() {
+        this.lowerleftElement = document.querySelector(".overlay .lowerleft");
+        if (this.lowerleftElement == null)
+            throw new Error("Unable to find overlay element.");
+    }
+    static setLowerLeftText(text) {
+        UIOverlay.instance.lowerleftElement.textContent = text;
+    }
+}
+const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView3D(wad)]);
+/// <reference path="ui.ts" />
+class MapView2D extends MapView {
+    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
+    thingHitTester = new HitTester();
+    highlightedThingIndex = -1;
+    dashedStrokeOffset = 0;
+    constructor(wad) {
+        super("MapView2D", wad);
+        this.resetValues();
+        setInterval(() => {
+            if (this.highlightedThingIndex == -1)
+                return;
+            --this.dashedStrokeOffset;
+            this.redraw();
+        }, 40);
+        this.redraw();
+    }
+    resetValues() {
+        this.highlightedThingIndex = -1;
+        this.dashedStrokeOffset = 0;
+        this.thingHitTester.startUpdate(0);
+    }
+    onWheel(event) {
+        if (this.currentMap == null)
+            return;
+        const pos = Matrix.vectexMultiply(this.viewMatrix.inverse(), {
+            x: event.clientX * 1,
+            y: event.clientY * 1
+        });
+        const speed = event.shiftKey ? 0.15 : 0.08;
+        const scale = 1 + (event.deltaY < 0 ? speed : -speed);
+        this.viewMatrix.translateSelf(pos.x, pos.y);
+        this.viewMatrix.scaleSelf(scale);
+        this.viewMatrix.translateSelf(-pos.x, -pos.y);
+        this.redraw();
+    }
+    onResize(_event) {
+        this.redraw();
+    }
+    onMouseDown(_event) { }
+    onMouseUp(_event) { }
+    onMouseMove(event) {
+        const hitResult = this.thingHitTester.hitTest(this.viewMatrix, event.offsetX, event.offsetY);
+        const newHighlightedIndex = hitResult?.index ?? -1;
+        if (this.highlightedThingIndex != newHighlightedIndex) {
+            console.log(hitResult?.info, hitResult?.info?.description);
+            this.highlightedThingIndex = newHighlightedIndex;
+            this.dashedStrokeOffset = 0;
+            this.redraw();
+        }
+        if (this.isMouseDown) {
+            const inverse = this.viewMatrix.inverse();
+            const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
+            const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
+            this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
+            this.redraw();
+        }
+    }
+    onDoubleClick(_event) {
+        // This is temporary test code.
+        const triangles = [];
+        const rects = Triangulation.getRectangles(this.currentMap);
+        for (const rect of rects) {
+            Triangulation.rectToTriangle(triangles, rect);
+        }
+        const stl = Triangulation.getStl(triangles);
+        console.log(stl);
+    }
+    onKeyUp(_event) { }
+    draw() {
+        const context = this.canvas.getContext("2d");
+        if (context == null)
+            throw new Error("Unable to get 2d context");
+        context.setTransform(undefined);
+        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        context.setTransform(this.viewMatrix);
+        context.imageSmoothingQuality = "high";
+        context.imageSmoothingEnabled = true;
+        // Draws a circle at the origin.
+        if (true) {
+            context.beginPath();
+            context.fillStyle = "red";
+            context.arc(0, 0, 20, 0, Math.PI * 2);
+            context.fill();
+        }
+        context.lineWidth = 1;
+        for (const linedef of this.currentMap.linedefs) {
+            context.beginPath();
+            if (linedef.hasFlag(32 /* LinedefFlags.SECRET */)) {
+                context.strokeStyle = "purple";
+            }
+            else if (linedef.hasFlag(128 /* LinedefFlags.DONTDRAW */)) {
+                context.strokeStyle = "grey";
+            }
+            else {
+                context.strokeStyle = "black";
+            }
+            context.moveTo(linedef.vertexA.x, linedef.vertexA.y);
+            context.lineTo(linedef.vertexB.x, linedef.vertexB.y);
+            context.stroke();
+        }
+        // Not all entries are used as index values, so we must grab selectedThingEntry while enumerating.
+        let selectedThingEntry = null;
+        let thingIndex = 0;
+        this.thingHitTester.startUpdate(this.currentMap.things.length);
+        for (const thing of this.currentMap.things) {
+            if (thing.description == null) {
+                continue;
+            }
+            // Are the thing's x/y actually the centers?
+            const centerX = thing.x;
+            const centerY = thing.y;
+            const radius = thing.description.radius;
+            const isHighlighted = thingIndex == this.highlightedThingIndex;
+            this.thingHitTester.addPoint(centerX, centerY, radius, thing);
+            ++thingIndex;
+            if (isHighlighted) {
+                selectedThingEntry = thing;
+                continue;
+            }
+            if (thing.type == 2014 /* ThingsType.HealthBonus */) {
+                context.beginPath();
+                context.fillStyle = "blue";
+                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                context.fill();
+            }
+            else {
+                const desc = thing.description;
+                const isMonster = (desc.class & 8 /* ThingsClass.Monster */) == 8 /* ThingsClass.Monster */;
+                context.beginPath();
+                context.strokeStyle = isMonster ? "red" : "green";
+                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                // Is it directional? If so, draw a directional line.
+                const isDirectional = isMonster || desc.sprite == "PLAY" /* ThingSprite.PLAY */;
+                if (isDirectional) {
+                    context.moveTo(centerX, centerY);
+                    const lineLength = desc.radius * 1.5;
+                    const radians = (thing.angle / 256) * (Math.PI * 2);
+                    const endX = centerX + Math.cos(radians) * lineLength;
+                    const endY = centerY + Math.sin(radians) * lineLength;
+                    context.lineTo(endX, endY);
+                }
+                context.stroke();
+            }
+        }
+        // Draw last to allow the box to have highest Z order.
+        if (selectedThingEntry != null) {
+            const thing = selectedThingEntry;
+            const centerX = thing.x;
+            const centerY = thing.y;
+            const radius = thing.description.radius;
+            const point = new DOMPoint(centerX, centerY);
+            const transformedPoint = point.matrixTransform(this.viewMatrix);
+            context.beginPath();
+            context.strokeStyle = "red";
+            context.setLineDash([6, 6]);
+            context.lineDashOffset = this.dashedStrokeOffset;
+            context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+            context.stroke();
+            context.setLineDash([]);
+            context.setTransform(undefined);
+            context.beginPath();
+            const boxX = transformedPoint.x - radius;
+            const boxY = transformedPoint.y + radius;
+            context.clearRect(boxX, boxY, 300, 100);
+            context.rect(boxX, boxY, 300, 100);
+            context.font = "12pt serif";
+            context.fillStyle = "Black";
+            context.textBaseline = "top";
+            context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
+            context.stroke();
+        }
+        context.setTransform(undefined);
+        context.font = "12pt serif";
+        context.fillStyle = "Black";
+        context.textBaseline = "top";
+        context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
+    }
+    async displayLevel(index) {
+        this.levelIndex = index;
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+        this.resetValues();
+        const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
+        if (player1Start != undefined) {
+            // Eh. Centering on the player start isn't the best, but might be improvable.
+            // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
+            // this.redraw();
+        }
+        this.fitLevelToView(this.currentMap);
+    }
+    activate() {
+        this.canvas.activate();
+        UIOverlay.setLowerLeftText("Tab: Switch to 3D\n" +
+            "Pan: Mouse drag\n" +
+            "Zoom: Mouse wheel\n" +
+            "Change level: +/-");
+    }
+    fitLevelToView(map) {
+        const bb = LinedefEntry.getBoundingBox(map.linedefs);
+        const canvasWidth = this.canvas.width;
+        const canvasHeight = this.canvas.height;
+        const scaleX = canvasWidth / bb.width;
+        const scaleY = canvasHeight / bb.height;
+        const scale = Math.min(scaleX, scaleY);
+        let translateX = (canvasWidth - bb.width * scale) / 2 - bb.left * scale;
+        let translateY = (canvasHeight - bb.height * scale) / 2 - bb.top * scale;
+        this.viewMatrix.a = scale;
+        this.viewMatrix.d = scale;
+        this.viewMatrix.e = translateX;
+        this.viewMatrix.f = translateY;
+        this.redraw();
+    }
+}
+/// <reference path="ui.ts" />
+class MapView3D extends MapView {
+    gl;
+    shaderProgram;
+    positionBuffer;
+    colorBuffer;
+    textureCoordBuffer;
+    aVertexPosition;
+    aVertexColor;
+    aTexCoord;
+    uProjectionMatrix;
+    uModelViewMatrix;
+    uTexture;
+    whiteTexture;
+    textureCache = new Map();
+    drawGroups = [];
+    cameraPosition = { x: 0, y: 0, z: 0 };
+    cameraYaw = 0;
+    cameraPitch = 0;
+    keysDown = new Set();
+    constructor(wad) {
+        super("MapView3D", wad);
+        const gl = this.canvas.getContext("webgl");
+        if (gl === null)
+            throw new Error("WebGL not available.");
+        this.gl = gl;
+        const vsSource = `
+            attribute vec3 aVertexPosition;
+            attribute vec3 aVertexColor;
+            attribute vec2 aTexCoord;
+            uniform mat4 uProjectionMatrix;
+            uniform mat4 uModelViewMatrix;
+            varying lowp vec3 vColor;
+            varying highp vec2 vTexCoord;
+
+            void main() {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+                vColor = aVertexColor;
+                vTexCoord = aTexCoord;
+            }
+        `;
+        const fsSource = `
+            precision lowp float;
+            varying lowp vec3 vColor;
+            varying highp vec2 vTexCoord;
+            uniform sampler2D uTexture;
+
+            void main() {
+                vec4 texColor = texture2D(uTexture, vTexCoord);
+                gl_FragColor = vec4(vColor * texColor.rgb, texColor.a);
+            }
+        `;
+        function loadShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            if (shader == null)
+                throw new Error("Unable to create shader");
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                const error = gl.getShaderInfoLog(shader);
+                gl.deleteShader(shader);
+                throw new Error(`An error occurred compiling the shaders: ${error}`);
+            }
+            return shader;
+        }
+        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+        const program = gl.createProgram();
+        if (program == null)
+            throw new Error("Unable to create shader program");
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
+        }
+        this.shaderProgram = program;
+        this.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
+        this.aVertexColor = gl.getAttribLocation(program, "aVertexColor");
+        this.aTexCoord = gl.getAttribLocation(program, "aTexCoord");
+        this.uProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix");
+        this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
+        this.uTexture = gl.getUniformLocation(program, "uTexture");
+        const positionBuffer = gl.createBuffer();
+        if (positionBuffer == null)
+            throw new Error("Unable to create position buffer.");
+        this.positionBuffer = positionBuffer;
+        const colorBuffer = gl.createBuffer();
+        if (colorBuffer == null)
+            throw new Error("Unable to create color buffer.");
+        this.colorBuffer = colorBuffer;
+        const textureCoordBuffer = gl.createBuffer();
+        if (textureCoordBuffer == null)
+            throw new Error("Unable to create texcoord buffer.");
+        this.textureCoordBuffer = textureCoordBuffer;
+        // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        // 1x1 white texture used for untextured (flat-shaded) geometry.
+        const whiteTexture = gl.createTexture();
+        if (whiteTexture == null)
+            throw new Error("Unable to create white texture.");
+        gl.bindTexture(gl.TEXTURE_2D, whiteTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+        this.whiteTexture = whiteTexture;
+        document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
+        document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
+        setInterval(() => this.tick(), 1000 / 60);
+        this.redraw();
+    }
+    async displayLevel(index) {
+        this.levelIndex = index;
+        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
+        this.buildGeometry();
+        const playerStart = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
+        if (playerStart != undefined) {
+            this.cameraPosition.x = playerStart.x;
+            this.cameraPosition.y = 41;
+            this.cameraPosition.z = -playerStart.y;
+            const radians = (playerStart.angle / 256) * (Math.PI * 2);
+            this.cameraYaw = -radians + Math.PI;
+        }
+        else {
+            this.cameraPosition.x = 0;
+            this.cameraPosition.y = 41;
+            this.cameraPosition.z = 0;
+            this.cameraYaw = 0;
+        }
+        this.cameraPitch = 0;
+        this.redraw();
+    }
+    activate() {
+        this.canvas.activate();
+        UIOverlay.setLowerLeftText("Tab: Switch to 2D\n" +
+            "Move: WASD\n" +
+            "Look: Mouse drag\n" +
+            "Up/down: Space/Z or mouse wheel\n" +
+            "Change level: +/-");
+    }
+    getTexture(name) {
+        if (name == null || name == "-")
+            return this.whiteTexture;
+        let texture = this.textureCache.get(name);
+        if (texture != null)
+            return texture;
+        const gl = this.gl;
+        const flat = this.wad.getImage(name, FlatEntry.default);
+        texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        this.textureCache.set(name, texture);
+        return texture;
+    }
+    buildGeometry() {
+        const gl = this.gl;
+        const positions = [];
+        const colors = [];
+        const textureCoords = [];
+        const rectangles = Triangulation.getRectangles(this.currentMap);
+        // Separate walls (untextured) from textured flats, grouped by texture name.
+        const wallRects = [];
+        const texturedGroups = new Map();
+        for (const rect of rectangles) {
+            if (rect.textureName == null || rect.textureName == "-") {
+                wallRects.push(rect);
+                continue;
+            }
+            let group = texturedGroups.get(rect.textureName);
+            if (group == null) {
+                group = [];
+                texturedGroups.set(rect.textureName, group);
+            }
+            group.push(rect);
+        }
+        this.drawGroups = [];
+        let vertexCount = 0;
+        // Emit wall geometry (flat-shaded, no texture).
+        const wallStart = vertexCount;
+        for (const rect of wallRects) {
+            this.emitRect(rect, positions, colors, textureCoords, false);
+            vertexCount += 6;
+        }
+        if (vertexCount > wallStart) {
+            this.drawGroups.push({ textureName: null, start: wallStart, count: vertexCount - wallStart });
+        }
+        // Emit textured groups (floors/ceilings).
+        for (const [textureName, rects] of texturedGroups) {
+            const groupStart = vertexCount;
+            for (const rect of rects) {
+                this.emitRect(rect, positions, colors, textureCoords, true);
+                vertexCount += 6;
+            }
+            this.drawGroups.push({ textureName, start: groupStart, count: vertexCount - groupStart });
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+    }
+    emitRect(rect, positions, colors, textureCoords, isTextured) {
+        // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
+        // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
+        const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
+        const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
+        const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
+        const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
+        positions.push(v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z, v2x, v2y, v2z, v1x, v1y, v1z, v3x, v3y, v3z);
+        const brightness = (rect.lightLevel ?? 128) / 255;
+        const isWall = rect.textureOffsetX != null;
+        if (isTextured && isWall) {
+            // Wall UVs: U = distance along linedef, V = height position.
+            const linedefLength = Math.sqrt((rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2);
+            const wallHeight = rect.y.z - rect.x.z;
+            const graphic = this.wad.getImage(rect.textureName);
+            const textureWidth = graphic.width || 64;
+            const textureHeight = graphic.height || 64;
+            const offsetU = rect.textureOffsetX / textureWidth;
+            const offsetV = rect.textureOffsetY / textureHeight;
+            const uLeft = offsetU;
+            const uRight = offsetU + linedefLength / textureWidth;
+            const vTop = offsetV;
+            const vBottom = offsetV + wallHeight / textureHeight;
+            // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
+            textureCoords.push(uLeft, vBottom, // v0: A floor
+            uLeft, vTop, // v1: A ceiling
+            uRight, vBottom, // v2: B floor
+            uRight, vBottom, // v2: B floor
+            uLeft, vTop, // v1: A ceiling
+            uRight, vTop);
+            for (let i = 0; i < 6; ++i) {
+                colors.push(brightness, brightness, brightness);
+            }
+        }
+        else if (isTextured) {
+            // Flat UVs: tile at 64 world units using original DOOM x/y coords.
+            const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
+            const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
+            const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
+            const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
+            textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
+            for (let i = 0; i < 6; ++i) {
+                colors.push(brightness, brightness, brightness);
+            }
+        }
+        else {
+            // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
+            for (let i = 0; i < 6; ++i) {
+                textureCoords.push(0, 0);
+            }
+            const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
+            const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
+            let normalX = edge1y * edge2z - edge1z * edge2y;
+            let normalY = edge1z * edge2x - edge1x * edge2z;
+            let normalZ = edge1x * edge2y - edge1y * edge2x;
+            const length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
+            if (length > 0) {
+                normalX /= length;
+                normalY /= length;
+                normalZ /= length;
+            }
+            const lightDot = Math.abs(normalX * 0.3 + normalY * 0.7 + normalZ * 0.2);
+            const wallBrightness = 0.25 + 0.75 * lightDot;
+            for (let i = 0; i < 6; ++i) {
+                colors.push(0.55 * wallBrightness, 0.45 * wallBrightness, 0.35 * wallBrightness);
+            }
+        }
+    }
+    tick() {
+        let moved = false;
+        const moveSpeed = this.keysDown.has("shift") ? 30 : 10;
+        const forwardX = Math.sin(this.cameraYaw);
+        const forwardZ = -Math.cos(this.cameraYaw);
+        const rightX = Math.cos(this.cameraYaw);
+        const rightZ = Math.sin(this.cameraYaw);
+        if (this.keysDown.has("w")) {
+            this.cameraPosition.x += forwardX * moveSpeed;
+            this.cameraPosition.z += forwardZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has("s")) {
+            this.cameraPosition.x -= forwardX * moveSpeed;
+            this.cameraPosition.z -= forwardZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has("a")) {
+            this.cameraPosition.x -= rightX * moveSpeed;
+            this.cameraPosition.z -= rightZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has("d")) {
+            this.cameraPosition.x += rightX * moveSpeed;
+            this.cameraPosition.z += rightZ * moveSpeed;
+            moved = true;
+        }
+        if (this.keysDown.has(" ")) {
+            this.cameraPosition.y += 20;
+            moved = true;
+        }
+        if (this.keysDown.has("z")) {
+            this.cameraPosition.y -= 20;
+            moved = true;
+        }
+        if (moved)
+            this.redraw();
+    }
+    draw() {
+        const gl = this.gl;
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+        gl.clearColor(0.1, 0.1, 0.15, 1.0);
+        gl.clearDepth(1.0);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LEQUAL);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+        gl.useProgram(this.shaderProgram);
+        // Projection matrix.
+        const projectionMatrix = mat4.create();
+        const aspect = gl.canvas.width / gl.canvas.height;
+        mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
+        gl.uniformMatrix4fv(this.uProjectionMatrix, false, projectionMatrix);
+        // View matrix: rotate then translate (camera transform).
+        const viewMatrix = mat4.create();
+        mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
+        mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
+        mat4.translate(viewMatrix, viewMatrix, [
+            -this.cameraPosition.x,
+            -this.cameraPosition.y,
+            -this.cameraPosition.z
+        ]);
+        gl.uniformMatrix4fv(this.uModelViewMatrix, false, viewMatrix);
+        // Bind position attribute.
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+        gl.vertexAttribPointer(this.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.aVertexPosition);
+        // Bind color attribute.
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
+        gl.vertexAttribPointer(this.aVertexColor, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.aVertexColor);
+        // Bind tex coord attribute.
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.aTexCoord);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1i(this.uTexture, 0);
+        for (const group of this.drawGroups) {
+            gl.bindTexture(gl.TEXTURE_2D, this.getTexture(group.textureName));
+            gl.drawArrays(gl.TRIANGLES, group.start, group.count);
+        }
+    }
+    onMouseMove(event) {
+        if (!this.isMouseDown)
+            return;
+        const sensitivity = 0.003;
+        this.cameraYaw += event.movementX * sensitivity;
+        this.cameraPitch += event.movementY * sensitivity;
+        // Clamp pitch to avoid flipping.
+        const maxPitch = Math.PI / 2 - 0.01;
+        if (this.cameraPitch > maxPitch)
+            this.cameraPitch = maxPitch;
+        if (this.cameraPitch < -maxPitch)
+            this.cameraPitch = -maxPitch;
+        this.redraw();
+    }
+    onWheel(event) {
+        const moveSpeed = event.shiftKey ? 100 : 30;
+        const direction = event.deltaY < 0 ? -1 : 1;
+        this.cameraPosition.y += moveSpeed * direction;
+        this.redraw();
+    }
+    onResize(_event) { this.redraw(); }
+    onMouseDown(_event) { }
+    onMouseUp(_event) { }
+    onDoubleClick(_event) { }
+    onKeyUp(event) { }
+}
 var SurfaceType;
 (function (SurfaceType) {
     SurfaceType[SurfaceType["Floor"] = 0] = "Floor";
@@ -1539,838 +2374,6 @@ class Matrix {
         };
     }
 }
-class UserFileInput {
-    constructor(target, loaded) {
-        target.addEventListener("dragover", (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-        });
-        target.addEventListener("dragleave", (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-        });
-        target.addEventListener("drop", (event) => {
-            event.preventDefault();
-            const file = event.dataTransfer.files[0];
-            const reader = new FileReader();
-            reader.addEventListener("loadend", (_loadEvent) => {
-                loaded(reader.result);
-            });
-            reader.readAsArrayBuffer(file);
-        });
-    }
-}
-// We only ever want a single client area sized canvas, and we want it to destroy and recreate
-// because we may switch the context type.
-class GlobalCanvas {
-    static canvases = new Map();
-    element;
-    get isActive() { return this.element.hidden == false; }
-    get width() { return this._width; }
-    get height() { return this._height; }
-    _width;
-    _height;
-    constructor(name, onResize) {
-        this.element = document.createElement("canvas");
-        this.element.setAttribute("data-canvas-name", name);
-        this.element.style.position = "fixed";
-        this.element.width = window.innerWidth;
-        this.element.height = window.innerHeight;
-        this._width = this.element.width;
-        this._height = this.element.height;
-        document.body.appendChild(this.element);
-        window.addEventListener("resize", (e) => {
-            this.element.width = window.innerWidth;
-            this.element.height = window.innerHeight;
-            this._width = this.element.width;
-            this._height = this.element.height;
-            onResize?.(e);
-        });
-    }
-    static get(name, onResize) {
-        const existing = GlobalCanvas.canvases.get(name);
-        if (existing != null)
-            return existing;
-        const instance = new GlobalCanvas(name, onResize);
-        GlobalCanvas.canvases.set(name, instance);
-        return instance;
-    }
-    getContext(contextId, options) {
-        return this.element.getContext(contextId, options);
-    }
-    activate() {
-        for (let [_, canvas] of GlobalCanvas.canvases) {
-            canvas.element.hidden = canvas != this;
-        }
-    }
-}
-class UserFileInputUI {
-    canvas = GlobalCanvas.get("UserFileInputUI", (() => this.draw()));
-    constructor(ctor) {
-        const wad = new Promise((resolve, _reject) => {
-            this.canvas.element.addEventListener("dblclick", async (_event) => {
-                try {
-                    this.canvas.element.classList.add("loading");
-                    const response = await fetch("./doom1.wad");
-                    if (response.status != 200) {
-                        alert(`Download failed :(  ${response.statusText} (${response.status}) ${await response.text()}`);
-                        return;
-                    }
-                    const blob = await response.blob();
-                    resolve(new WadFile(await blob.arrayBuffer()));
-                }
-                finally {
-                    this.canvas.element.classList.remove("loading");
-                }
-            });
-            new UserFileInput(this.canvas.element, (file) => {
-                const wad = new WadFile(file);
-                console.log("wad", wad);
-                resolve(wad);
-            });
-        });
-        wad.then((wad) => {
-            for (const canvas of document.querySelectorAll("canvas"))
-                canvas.remove();
-            let mapViewIndex = 0;
-            const mapViews = ctor(wad);
-            let previousMapView = mapViews[0];
-            function updateShownMapView() {
-                const nextMapview = mapViews[mapViewIndex];
-                // Avoid state thrashing when possible.
-                if (previousMapView.levelIndex != nextMapview.levelIndex || nextMapview.levelIndex < 0) {
-                    nextMapview.displayLevel(Math.max(previousMapView.levelIndex, 0));
-                    console.info(`Showing ${nextMapview.name} + ${nextMapview.levelIndex}`);
-                }
-                nextMapview.activate();
-                console.info(`Showing ${nextMapview.name}`);
-                previousMapView = nextMapview;
-            }
-            document.addEventListener("keydown", (e) => {
-                if (e.key === "Tab") {
-                    e.preventDefault();
-                    mapViewIndex = (mapViewIndex + 1) % mapViews.length;
-                    updateShownMapView();
-                }
-            });
-            updateShownMapView();
-        });
-        this.draw();
-    }
-    draw() {
-        const context = this.canvas.getContext("2d");
-        if (context == null)
-            throw new Error("Unable to get 2d context");
-        function drawCentered(text, width, height) {
-            const metrics = context.measureText(text);
-            const actualHeight = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent;
-            context.fillText(text, width / 2 - metrics.width / 2, height / 2 - actualHeight / 2, width);
-        }
-        function drawBottomLeft(text, width, height) {
-            const lines = text.split("\n");
-            const linePadding = 5;
-            let yoffset = 0;
-            const heights = lines.map((t) => {
-                const metrics = context.measureText(t);
-                const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + linePadding;
-                yoffset += height;
-                return height;
-            });
-            for (let i = 0; i < lines.length; ++i) {
-                const line = lines[i];
-                context.fillText(line, 0, height - yoffset, width);
-                yoffset -= heights[i];
-            }
-        }
-        context.setTransform(undefined);
-        context.font = "40px serif";
-        drawCentered("Drag & Drop WAD", this.canvas.width, this.canvas.height);
-        context.font = "20px serif";
-        drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
-        context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
-    }
-}
-class MapView {
-    name;
-    wad;
-    canvas;
-    isMouseDown = false;
-    currentMap;
-    levelIndex = -1;
-    awaitingRender = false;
-    constructor(name, wad) {
-        this.name = name;
-        this.wad = wad;
-        this.canvas = GlobalCanvas.get(name);
-        this.currentMap = this.wad.maps[0];
-        document.addEventListener("wheel", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            this.onWheel(e);
-        });
-        window.addEventListener("resize", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            this.onResize(e);
-        });
-        this.canvas.element.addEventListener("mousedown", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            this.isMouseDown = true;
-            this.onMouseDown(e);
-        });
-        this.canvas.element.addEventListener("mouseup", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            this.isMouseDown = false;
-            this.onMouseUp(e);
-        });
-        this.canvas.element.addEventListener("mousemove", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            this.onMouseMove(e);
-        });
-        this.canvas.element.addEventListener("dblclick", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            this.onDoubleClick(e);
-        });
-        document.addEventListener("keyup", (e) => {
-            if (!this.canvas.isActive)
-                return;
-            switch (e.key) {
-                case "-":
-                    if (this.levelIndex == 0) {
-                        this.levelIndex = this.wad.maps.length - 1;
-                    }
-                    else {
-                        --this.levelIndex;
-                    }
-                    this.displayLevel(this.levelIndex);
-                    break;
-                case "+":
-                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
-                    this.displayLevel(this.levelIndex);
-                    break;
-            }
-            this.onKeyUp(e);
-        });
-    }
-    redraw() {
-        if (this.awaitingRender)
-            return;
-        this.awaitingRender = true;
-        requestAnimationFrame(() => {
-            this.draw();
-            this.awaitingRender = false;
-        });
-    }
-}
-class MapView2D extends MapView {
-    viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
-    thingHitTester = new HitTester();
-    highlightedThingIndex = -1;
-    dashedStrokeOffset = 0;
-    constructor(wad) {
-        super("MapView2D", wad);
-        this.resetValues();
-        setInterval(() => {
-            if (this.highlightedThingIndex == -1)
-                return;
-            --this.dashedStrokeOffset;
-            this.redraw();
-        }, 40);
-        this.redraw();
-    }
-    resetValues() {
-        this.highlightedThingIndex = -1;
-        this.dashedStrokeOffset = 0;
-        this.thingHitTester.startUpdate(0);
-    }
-    onWheel(event) {
-        if (this.currentMap == null)
-            return;
-        const pos = Matrix.vectexMultiply(this.viewMatrix.inverse(), {
-            x: event.clientX * 1,
-            y: event.clientY * 1
-        });
-        const speed = event.shiftKey ? 0.15 : 0.08;
-        const scale = 1 + (event.deltaY < 0 ? speed : -speed);
-        this.viewMatrix.translateSelf(pos.x, pos.y);
-        this.viewMatrix.scaleSelf(scale);
-        this.viewMatrix.translateSelf(-pos.x, -pos.y);
-        this.redraw();
-    }
-    onResize(_event) {
-        this.redraw();
-    }
-    onMouseDown(_event) { }
-    onMouseUp(_event) { }
-    onMouseMove(event) {
-        const hitResult = this.thingHitTester.hitTest(this.viewMatrix, event.offsetX, event.offsetY);
-        const newHighlightedIndex = hitResult?.index ?? -1;
-        if (this.highlightedThingIndex != newHighlightedIndex) {
-            console.log(hitResult?.info, hitResult?.info?.description);
-            this.highlightedThingIndex = newHighlightedIndex;
-            this.dashedStrokeOffset = 0;
-            this.redraw();
-        }
-        if (this.isMouseDown) {
-            const inverse = this.viewMatrix.inverse();
-            const pointDelta = new DOMPoint(event.movementX, event.movementY).matrixTransform(inverse);
-            const pointOrigin = new DOMPoint(0, 0).matrixTransform(inverse);
-            this.viewMatrix.translateSelf(pointDelta.x - pointOrigin.x, pointDelta.y - pointOrigin.y);
-            this.redraw();
-        }
-    }
-    onDoubleClick(_event) {
-        // This is temporary test code.
-        const triangles = [];
-        const rects = Triangulation.getRectangles(this.currentMap);
-        for (const rect of rects) {
-            Triangulation.rectToTriangle(triangles, rect);
-        }
-        const stl = Triangulation.getStl(triangles);
-        console.log(stl);
-    }
-    onKeyUp(_event) { }
-    draw() {
-        const context = this.canvas.getContext("2d");
-        if (context == null)
-            throw new Error("Unable to get 2d context");
-        context.setTransform(undefined);
-        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        context.setTransform(this.viewMatrix);
-        context.imageSmoothingQuality = "high";
-        context.imageSmoothingEnabled = true;
-        // Draws a circle at the origin.
-        if (true) {
-            context.beginPath();
-            context.fillStyle = "red";
-            context.arc(0, 0, 20, 0, Math.PI * 2);
-            context.fill();
-        }
-        context.lineWidth = 1;
-        for (const linedef of this.currentMap.linedefs) {
-            context.beginPath();
-            if (linedef.hasFlag(32 /* LinedefFlags.SECRET */)) {
-                context.strokeStyle = "purple";
-            }
-            else if (linedef.hasFlag(128 /* LinedefFlags.DONTDRAW */)) {
-                context.strokeStyle = "grey";
-            }
-            else {
-                context.strokeStyle = "black";
-            }
-            context.moveTo(linedef.vertexA.x, linedef.vertexA.y);
-            context.lineTo(linedef.vertexB.x, linedef.vertexB.y);
-            context.stroke();
-        }
-        // Not all entries are used as index values, so we must grab selectedThingEntry while enumerating.
-        let selectedThingEntry = null;
-        let thingIndex = 0;
-        this.thingHitTester.startUpdate(this.currentMap.things.length);
-        for (const thing of this.currentMap.things) {
-            if (thing.description == null) {
-                continue;
-            }
-            // Are the thing's x/y actually the centers?
-            const centerX = thing.x;
-            const centerY = thing.y;
-            const radius = thing.description.radius;
-            const isHighlighted = thingIndex == this.highlightedThingIndex;
-            this.thingHitTester.addPoint(centerX, centerY, radius, thing);
-            ++thingIndex;
-            if (isHighlighted) {
-                selectedThingEntry = thing;
-                continue;
-            }
-            if (thing.type == 2014 /* ThingsType.HealthBonus */) {
-                context.beginPath();
-                context.fillStyle = "blue";
-                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                context.fill();
-            }
-            else {
-                const desc = thing.description;
-                const isMonster = (desc.class & 8 /* ThingsClass.Monster */) == 8 /* ThingsClass.Monster */;
-                context.beginPath();
-                context.strokeStyle = isMonster ? "red" : "green";
-                context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-                // Is it directional? If so, draw a directional line.
-                const isDirectional = isMonster || desc.sprite == "PLAY" /* ThingSprite.PLAY */;
-                if (isDirectional) {
-                    context.moveTo(centerX, centerY);
-                    const lineLength = desc.radius * 1.5;
-                    const radians = (thing.angle / 256) * (Math.PI * 2);
-                    const endX = centerX + Math.cos(radians) * lineLength;
-                    const endY = centerY + Math.sin(radians) * lineLength;
-                    context.lineTo(endX, endY);
-                }
-                context.stroke();
-            }
-        }
-        // Draw last to allow the box to have highest Z order.
-        if (selectedThingEntry != null) {
-            const thing = selectedThingEntry;
-            const centerX = thing.x;
-            const centerY = thing.y;
-            const radius = thing.description.radius;
-            const point = new DOMPoint(centerX, centerY);
-            const transformedPoint = point.matrixTransform(this.viewMatrix);
-            context.beginPath();
-            context.strokeStyle = "red";
-            context.setLineDash([6, 6]);
-            context.lineDashOffset = this.dashedStrokeOffset;
-            context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-            context.stroke();
-            context.setLineDash([]);
-            context.setTransform(undefined);
-            context.beginPath();
-            const boxX = transformedPoint.x - radius;
-            const boxY = transformedPoint.y + radius;
-            context.clearRect(boxX, boxY, 300, 100);
-            context.rect(boxX, boxY, 300, 100);
-            context.font = "12pt serif";
-            context.fillStyle = "Black";
-            context.textBaseline = "top";
-            context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
-            context.stroke();
-        }
-        context.setTransform(undefined);
-        context.font = "12pt serif";
-        context.fillStyle = "Black";
-        context.textBaseline = "top";
-        context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
-    }
-    async displayLevel(index) {
-        this.levelIndex = index;
-        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
-        this.resetValues();
-        const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
-        if (player1Start != undefined) {
-            // Eh. Centering on the player start isn't the best, but might be improvable.
-            // this.viewMatrix.translateSelf(-player1Start.x, -player1Start.y);
-            // this.redraw();
-        }
-        this.fitLevelToView(this.currentMap);
-    }
-    activate() {
-        this.canvas.activate();
-        UIOverlay.setLowerLeftText("Tab: Switch to 3D\n" +
-            "Pan: Mouse drag\n" +
-            "Zoom: Mouse wheel\n" +
-            "Change level: +/-");
-    }
-    fitLevelToView(map) {
-        const bb = LinedefEntry.getBoundingBox(map.linedefs);
-        const canvasWidth = this.canvas.width;
-        const canvasHeight = this.canvas.height;
-        const scaleX = canvasWidth / bb.width;
-        const scaleY = canvasHeight / bb.height;
-        const scale = Math.min(scaleX, scaleY);
-        let translateX = (canvasWidth - bb.width * scale) / 2 - bb.left * scale;
-        let translateY = (canvasHeight - bb.height * scale) / 2 - bb.top * scale;
-        this.viewMatrix.a = scale;
-        this.viewMatrix.d = scale;
-        this.viewMatrix.e = translateX;
-        this.viewMatrix.f = translateY;
-        this.redraw();
-    }
-}
-class MapView3D extends MapView {
-    gl;
-    shaderProgram;
-    positionBuffer;
-    colorBuffer;
-    textureCoordBuffer;
-    aVertexPosition;
-    aVertexColor;
-    aTexCoord;
-    uProjectionMatrix;
-    uModelViewMatrix;
-    uTexture;
-    whiteTexture;
-    textureCache = new Map();
-    drawGroups = [];
-    cameraPosition = { x: 0, y: 0, z: 0 };
-    cameraYaw = 0;
-    cameraPitch = 0;
-    keysDown = new Set();
-    constructor(wad) {
-        super("MapView3D", wad);
-        const gl = this.canvas.getContext("webgl");
-        if (gl === null)
-            throw new Error("WebGL not available.");
-        this.gl = gl;
-        const vsSource = `
-            attribute vec3 aVertexPosition;
-            attribute vec3 aVertexColor;
-            attribute vec2 aTexCoord;
-            uniform mat4 uProjectionMatrix;
-            uniform mat4 uModelViewMatrix;
-            varying lowp vec3 vColor;
-            varying highp vec2 vTexCoord;
-
-            void main() {
-                gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
-                vColor = aVertexColor;
-                vTexCoord = aTexCoord;
-            }
-        `;
-        const fsSource = `
-            precision lowp float;
-            varying lowp vec3 vColor;
-            varying highp vec2 vTexCoord;
-            uniform sampler2D uTexture;
-
-            void main() {
-                vec4 texColor = texture2D(uTexture, vTexCoord);
-                gl_FragColor = vec4(vColor * texColor.rgb, texColor.a);
-            }
-        `;
-        function loadShader(gl, type, source) {
-            const shader = gl.createShader(type);
-            if (shader == null)
-                throw new Error("Unable to create shader");
-            gl.shaderSource(shader, source);
-            gl.compileShader(shader);
-            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                const error = gl.getShaderInfoLog(shader);
-                gl.deleteShader(shader);
-                throw new Error(`An error occurred compiling the shaders: ${error}`);
-            }
-            return shader;
-        }
-        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
-        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
-        const program = gl.createProgram();
-        if (program == null)
-            throw new Error("Unable to create shader program");
-        gl.attachShader(program, vertexShader);
-        gl.attachShader(program, fragmentShader);
-        gl.linkProgram(program);
-        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-            throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
-        }
-        this.shaderProgram = program;
-        this.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
-        this.aVertexColor = gl.getAttribLocation(program, "aVertexColor");
-        this.aTexCoord = gl.getAttribLocation(program, "aTexCoord");
-        this.uProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix");
-        this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
-        this.uTexture = gl.getUniformLocation(program, "uTexture");
-        const positionBuffer = gl.createBuffer();
-        if (positionBuffer == null)
-            throw new Error("Unable to create position buffer.");
-        this.positionBuffer = positionBuffer;
-        const colorBuffer = gl.createBuffer();
-        if (colorBuffer == null)
-            throw new Error("Unable to create color buffer.");
-        this.colorBuffer = colorBuffer;
-        const textureCoordBuffer = gl.createBuffer();
-        if (textureCoordBuffer == null)
-            throw new Error("Unable to create texcoord buffer.");
-        this.textureCoordBuffer = textureCoordBuffer;
-        // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        // 1x1 white texture used for untextured (flat-shaded) geometry.
-        const whiteTexture = gl.createTexture();
-        if (whiteTexture == null)
-            throw new Error("Unable to create white texture.");
-        gl.bindTexture(gl.TEXTURE_2D, whiteTexture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
-        this.whiteTexture = whiteTexture;
-        document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
-        document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
-        setInterval(() => this.tick(), 1000 / 60);
-        this.redraw();
-    }
-    async displayLevel(index) {
-        this.levelIndex = index;
-        this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
-        this.buildGeometry();
-        const playerStart = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
-        if (playerStart != undefined) {
-            this.cameraPosition.x = playerStart.x;
-            this.cameraPosition.y = 41;
-            this.cameraPosition.z = -playerStart.y;
-            const radians = (playerStart.angle / 256) * (Math.PI * 2);
-            this.cameraYaw = -radians + Math.PI;
-        }
-        else {
-            this.cameraPosition.x = 0;
-            this.cameraPosition.y = 41;
-            this.cameraPosition.z = 0;
-            this.cameraYaw = 0;
-        }
-        this.cameraPitch = 0;
-        this.redraw();
-    }
-    activate() {
-        this.canvas.activate();
-        UIOverlay.setLowerLeftText("Tab: Switch to 2D\n" +
-            "Move: WASD\n" +
-            "Look: Mouse drag\n" +
-            "Up/down: Space/Z or mouse wheel\n" +
-            "Change level: +/-");
-    }
-    getTexture(name) {
-        if (name == null || name == "-")
-            return this.whiteTexture;
-        let texture = this.textureCache.get(name);
-        if (texture != null)
-            return texture;
-        const gl = this.gl;
-        const flat = this.wad.getImage(name, FlatEntry.default);
-        texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        this.textureCache.set(name, texture);
-        return texture;
-    }
-    buildGeometry() {
-        const gl = this.gl;
-        const positions = [];
-        const colors = [];
-        const textureCoords = [];
-        const rectangles = Triangulation.getRectangles(this.currentMap);
-        // Separate walls (untextured) from textured flats, grouped by texture name.
-        const wallRects = [];
-        const texturedGroups = new Map();
-        for (const rect of rectangles) {
-            if (rect.textureName == null || rect.textureName == "-") {
-                wallRects.push(rect);
-                continue;
-            }
-            let group = texturedGroups.get(rect.textureName);
-            if (group == null) {
-                group = [];
-                texturedGroups.set(rect.textureName, group);
-            }
-            group.push(rect);
-        }
-        this.drawGroups = [];
-        let vertexCount = 0;
-        // Emit wall geometry (flat-shaded, no texture).
-        const wallStart = vertexCount;
-        for (const rect of wallRects) {
-            this.emitRect(rect, positions, colors, textureCoords, false);
-            vertexCount += 6;
-        }
-        if (vertexCount > wallStart) {
-            this.drawGroups.push({ textureName: null, start: wallStart, count: vertexCount - wallStart });
-        }
-        // Emit textured groups (floors/ceilings).
-        for (const [textureName, rects] of texturedGroups) {
-            const groupStart = vertexCount;
-            for (const rect of rects) {
-                this.emitRect(rect, positions, colors, textureCoords, true);
-                vertexCount += 6;
-            }
-            this.drawGroups.push({ textureName, start: groupStart, count: vertexCount - groupStart });
-        }
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
-    }
-    emitRect(rect, positions, colors, textureCoords, isTextured) {
-        // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
-        // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
-        const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
-        const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
-        const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
-        const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
-        positions.push(v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z, v2x, v2y, v2z, v1x, v1y, v1z, v3x, v3y, v3z);
-        const brightness = (rect.lightLevel ?? 128) / 255;
-        const isWall = rect.textureOffsetX != null;
-        if (isTextured && isWall) {
-            // Wall UVs: U = distance along linedef, V = height position.
-            const linedefLength = Math.sqrt((rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2);
-            const wallHeight = rect.y.z - rect.x.z;
-            const graphic = this.wad.getImage(rect.textureName);
-            const textureWidth = graphic.width || 64;
-            const textureHeight = graphic.height || 64;
-            const offsetU = rect.textureOffsetX / textureWidth;
-            const offsetV = rect.textureOffsetY / textureHeight;
-            const uLeft = offsetU;
-            const uRight = offsetU + linedefLength / textureWidth;
-            const vTop = offsetV;
-            const vBottom = offsetV + wallHeight / textureHeight;
-            // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
-            textureCoords.push(uLeft, vBottom, // v0: A floor
-            uLeft, vTop, // v1: A ceiling
-            uRight, vBottom, // v2: B floor
-            uRight, vBottom, // v2: B floor
-            uLeft, vTop, // v1: A ceiling
-            uRight, vTop);
-            for (let i = 0; i < 6; ++i) {
-                colors.push(brightness, brightness, brightness);
-            }
-        }
-        else if (isTextured) {
-            // Flat UVs: tile at 64 world units using original DOOM x/y coords.
-            const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
-            const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
-            const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
-            const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
-            textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
-            for (let i = 0; i < 6; ++i) {
-                colors.push(brightness, brightness, brightness);
-            }
-        }
-        else {
-            // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
-            for (let i = 0; i < 6; ++i) {
-                textureCoords.push(0, 0);
-            }
-            const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
-            const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
-            let normalX = edge1y * edge2z - edge1z * edge2y;
-            let normalY = edge1z * edge2x - edge1x * edge2z;
-            let normalZ = edge1x * edge2y - edge1y * edge2x;
-            const length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
-            if (length > 0) {
-                normalX /= length;
-                normalY /= length;
-                normalZ /= length;
-            }
-            const lightDot = Math.abs(normalX * 0.3 + normalY * 0.7 + normalZ * 0.2);
-            const wallBrightness = 0.25 + 0.75 * lightDot;
-            for (let i = 0; i < 6; ++i) {
-                colors.push(0.55 * wallBrightness, 0.45 * wallBrightness, 0.35 * wallBrightness);
-            }
-        }
-    }
-    tick() {
-        let moved = false;
-        const moveSpeed = this.keysDown.has("shift") ? 30 : 10;
-        const forwardX = Math.sin(this.cameraYaw);
-        const forwardZ = -Math.cos(this.cameraYaw);
-        const rightX = Math.cos(this.cameraYaw);
-        const rightZ = Math.sin(this.cameraYaw);
-        if (this.keysDown.has("w")) {
-            this.cameraPosition.x += forwardX * moveSpeed;
-            this.cameraPosition.z += forwardZ * moveSpeed;
-            moved = true;
-        }
-        if (this.keysDown.has("s")) {
-            this.cameraPosition.x -= forwardX * moveSpeed;
-            this.cameraPosition.z -= forwardZ * moveSpeed;
-            moved = true;
-        }
-        if (this.keysDown.has("a")) {
-            this.cameraPosition.x -= rightX * moveSpeed;
-            this.cameraPosition.z -= rightZ * moveSpeed;
-            moved = true;
-        }
-        if (this.keysDown.has("d")) {
-            this.cameraPosition.x += rightX * moveSpeed;
-            this.cameraPosition.z += rightZ * moveSpeed;
-            moved = true;
-        }
-        if (this.keysDown.has(" ")) {
-            this.cameraPosition.y += 20;
-            moved = true;
-        }
-        if (this.keysDown.has("z")) {
-            this.cameraPosition.y -= 20;
-            moved = true;
-        }
-        if (moved)
-            this.redraw();
-    }
-    draw() {
-        const gl = this.gl;
-        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-        gl.clearColor(0.1, 0.1, 0.15, 1.0);
-        gl.clearDepth(1.0);
-        gl.enable(gl.DEPTH_TEST);
-        gl.depthFunc(gl.LEQUAL);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        gl.enable(gl.CULL_FACE);
-        gl.cullFace(gl.BACK);
-        gl.useProgram(this.shaderProgram);
-        // Projection matrix.
-        const projectionMatrix = mat4.create();
-        const aspect = gl.canvas.width / gl.canvas.height;
-        mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
-        gl.uniformMatrix4fv(this.uProjectionMatrix, false, projectionMatrix);
-        // View matrix: rotate then translate (camera transform).
-        const viewMatrix = mat4.create();
-        mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
-        mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
-        mat4.translate(viewMatrix, viewMatrix, [
-            -this.cameraPosition.x,
-            -this.cameraPosition.y,
-            -this.cameraPosition.z
-        ]);
-        gl.uniformMatrix4fv(this.uModelViewMatrix, false, viewMatrix);
-        // Bind position attribute.
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-        gl.vertexAttribPointer(this.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.aVertexPosition);
-        // Bind color attribute.
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
-        gl.vertexAttribPointer(this.aVertexColor, 3, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.aVertexColor);
-        // Bind tex coord attribute.
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
-        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.aTexCoord);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.uniform1i(this.uTexture, 0);
-        for (const group of this.drawGroups) {
-            gl.bindTexture(gl.TEXTURE_2D, this.getTexture(group.textureName));
-            gl.drawArrays(gl.TRIANGLES, group.start, group.count);
-        }
-    }
-    onMouseMove(event) {
-        if (!this.isMouseDown)
-            return;
-        const sensitivity = 0.003;
-        this.cameraYaw += event.movementX * sensitivity;
-        this.cameraPitch += event.movementY * sensitivity;
-        // Clamp pitch to avoid flipping.
-        const maxPitch = Math.PI / 2 - 0.01;
-        if (this.cameraPitch > maxPitch)
-            this.cameraPitch = maxPitch;
-        if (this.cameraPitch < -maxPitch)
-            this.cameraPitch = -maxPitch;
-        this.redraw();
-    }
-    onWheel(event) {
-        const moveSpeed = event.shiftKey ? 100 : 30;
-        const direction = event.deltaY < 0 ? -1 : 1;
-        this.cameraPosition.y += moveSpeed * direction;
-        this.redraw();
-    }
-    onResize(_event) { this.redraw(); }
-    onMouseDown(_event) { }
-    onMouseUp(_event) { }
-    onDoubleClick(_event) { }
-    onKeyUp(event) { }
-}
-class UIOverlay {
-    static instance = new UIOverlay();
-    lowerleftElement;
-    constructor() {
-        this.lowerleftElement = document.querySelector(".overlay .lowerleft");
-        if (this.lowerleftElement == null)
-            throw new Error("Unable to find overlay element.");
-    }
-    static setLowerLeftText(text) {
-        UIOverlay.instance.lowerleftElement.textContent = text;
-    }
-}
-const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView3D(wad)]);
 class BinaryFileReader {
     position = 0;
     u8;
