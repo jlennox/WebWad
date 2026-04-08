@@ -451,7 +451,7 @@ class MapView3D extends MapView {
     private readonly shaderProgram: WebGLProgram;
     private readonly positionBuffer: WebGLBuffer;
     private readonly colorBuffer: WebGLBuffer;
-    private readonly texCoordBuffer: WebGLBuffer;
+    private readonly textureCoordBuffer: WebGLBuffer;
     private readonly aVertexPosition: number;
     private readonly aVertexColor: number;
     private readonly aTexCoord: number;
@@ -542,9 +542,9 @@ class MapView3D extends MapView {
         if (colorBuffer == null) throw new Error("Unable to create color buffer.");
         this.colorBuffer = colorBuffer;
 
-        const texCoordBuffer = gl.createBuffer();
-        if (texCoordBuffer == null) throw new Error("Unable to create texcoord buffer.");
-        this.texCoordBuffer = texCoordBuffer;
+        const textureCoordBuffer = gl.createBuffer();
+        if (textureCoordBuffer == null) throw new Error("Unable to create texcoord buffer.");
+        this.textureCoordBuffer = textureCoordBuffer;
 
         // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
 
@@ -592,13 +592,15 @@ class MapView3D extends MapView {
         this.redraw();
     }
 
-    private getOrCreateTexture(name: string): WebGLTexture {
+    private getTexture(name: string | null): WebGLTexture {
+        if (name == null || name == "-") return this.whiteTexture;
+
         let texture = this.textureCache.get(name);
         if (texture != null) return texture;
 
         const gl = this.gl;
         const flat = this.wad.getImage(name, FlatEntry.default);
-        texture = gl.createTexture()!;
+        texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
 
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
@@ -615,12 +617,12 @@ class MapView3D extends MapView {
         const gl = this.gl;
         const positions: number[] = [];
         const colors: number[] = [];
-        const texCoords: number[] = [];
+        const textureCoords: number[] = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
 
         // Separate walls (untextured) from textured flats, grouped by texture name.
-        const wallRects: IRectangle[] = [];
-        const texturedGroups: Map<string, IRectangle[]> = new Map();
+        const wallRects: ISurface[] = [];
+        const texturedGroups: Map<string, ISurface[]> = new Map();
 
         for (const rect of rectangles) {
             if (rect.textureName == null || rect.textureName == "-") {
@@ -642,9 +644,10 @@ class MapView3D extends MapView {
         // Emit wall geometry (flat-shaded, no texture).
         const wallStart = vertexCount;
         for (const rect of wallRects) {
-            this.emitRect(rect, positions, colors, texCoords, false);
+            this.emitRect(rect, positions, colors, textureCoords, false);
             vertexCount += 6;
         }
+
         if (vertexCount > wallStart) {
             this.drawGroups.push({ textureName: null, start: wallStart, count: vertexCount - wallStart });
         }
@@ -653,7 +656,7 @@ class MapView3D extends MapView {
         for (const [textureName, rects] of texturedGroups) {
             const groupStart = vertexCount;
             for (const rect of rects) {
-                this.emitRect(rect, positions, colors, texCoords, true);
+                this.emitRect(rect, positions, colors, textureCoords, true);
                 vertexCount += 6;
             }
             this.drawGroups.push({ textureName, start: groupStart, count: vertexCount - groupStart });
@@ -665,14 +668,16 @@ class MapView3D extends MapView {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
 
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
     }
 
     private emitRect(
-        rect: IRectangle,
-        positions: number[], colors: number[], texCoords: number[],
-        isTextured: boolean
+        rect: ISurface,
+        positions: number[],
+        colors: number[],
+        textureCoords: number[],
+        isTextured: boolean,
     ): void {
         // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
         // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
@@ -680,7 +685,6 @@ class MapView3D extends MapView {
         const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
         const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
         const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
-
         positions.push(
             v0x, v0y, v0z,
             v1x, v1y, v1z,
@@ -711,7 +715,7 @@ class MapView3D extends MapView {
             const vBottom = offsetV + wallHeight / textureHeight;
 
             // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
-            texCoords.push(
+            textureCoords.push(
                 uLeft, vBottom,   // v0: A floor
                 uLeft, vTop,      // v1: A ceiling
                 uRight, vBottom,  // v2: B floor
@@ -729,7 +733,7 @@ class MapView3D extends MapView {
             const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
             const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
             const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
-            texCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
+            textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
 
             for (let i = 0; i < 6; ++i) {
                 colors.push(brightness, brightness, brightness);
@@ -737,7 +741,7 @@ class MapView3D extends MapView {
         } else {
             // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
             for (let i = 0; i < 6; ++i) {
-                texCoords.push(0, 0);
+                textureCoords.push(0, 0);
             }
 
             const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
@@ -813,6 +817,9 @@ class MapView3D extends MapView {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+
         gl.useProgram(this.shaderProgram);
 
         // Projection matrix.
@@ -843,7 +850,7 @@ class MapView3D extends MapView {
         gl.enableVertexAttribArray(this.aVertexColor);
 
         // Bind tex coord attribute.
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.texCoordBuffer);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
         gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(this.aTexCoord);
 
@@ -851,11 +858,7 @@ class MapView3D extends MapView {
         gl.uniform1i(this.uTexture, 0);
 
         for (const group of this.drawGroups) {
-            if (group.textureName != null) {
-                gl.bindTexture(gl.TEXTURE_2D, this.getOrCreateTexture(group.textureName));
-            } else {
-                gl.bindTexture(gl.TEXTURE_2D, this.whiteTexture);
-            }
+            gl.bindTexture(gl.TEXTURE_2D, this.getTexture(group.textureName));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
         }
     }

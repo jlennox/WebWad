@@ -391,13 +391,13 @@ class LinedefEntry {
     public readonly flags: LinedefFlags; // u16
     public readonly linetype: u16;
     public readonly tag: u16;
-    public readonly sidedefRightIndex: u16;
-    public readonly sidedefLeftIndex: u16;
+    public readonly sidedefFrontIndex: u16;
+    public readonly sidedefBackIndex: u16;
 
     public get vertexA(): Vertex { return this.map.vertexes[this.vertexAIndex]; }
     public get vertexB(): Vertex { return this.map.vertexes[this.vertexBIndex]; }
-    public get sidedefRight(): SideDefEntry { return this.map.sidedefs[this.sidedefRightIndex]; }
-    public get sidedefLeft(): SideDefEntry | null { return this.sidedefLeftIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefLeftIndex]; }
+    public get sidedefFont(): SideDefEntry { return this.map.sidedefs[this.sidedefFrontIndex]; }
+    public get sidedefBack(): SideDefEntry | null { return this.sidedefBackIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefBackIndex]; }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.vertexAIndex = reader.readU16();
@@ -405,8 +405,8 @@ class LinedefEntry {
         this.flags = reader.readU16();
         this.linetype = reader.readU16();
         this.tag = reader.readU16();
-        this.sidedefRightIndex = reader.readU16();
-        this.sidedefLeftIndex = reader.readU16();
+        this.sidedefFrontIndex = reader.readU16();
+        this.sidedefBackIndex = reader.readU16();
     }
 
     public hasFlag(flag: LinedefFlags): boolean {
@@ -610,7 +610,7 @@ class MapEntry {
     private getLinedefsPerSector(): Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}> {
         const linedefsPerSector: {[sectorIndex: number]: LinedefEntry[]} = {};
         for (const linedef of this.linedefs) {
-            for (const sidedef of [linedef.sidedefLeft, linedef.sidedefRight]) {
+            for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null) continue;
 
                 let linedefs = linedefsPerSector[sidedef.sectorIndex];
