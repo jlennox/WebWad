@@ -1,42 +1,138 @@
-type IVertex = Readonly<{ x: number; y: number; z: number }>;
-type IVertex2D = Readonly<{ x: number; y: number }>;
-type ITriangle = Readonly<{ v1: IVertex; v2: IVertex; v3: IVertex }>;
-type IRectangle = Readonly<{ x: IVertex; y: IVertex; x2: IVertex; y2: IVertex }>;
+interface IVertex {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+}
+
+interface IVertex2D {
+    readonly x: number;
+    readonly y: number;
+}
+
+interface ITriangle {
+    readonly v1: IVertex;
+    readonly v2: IVertex;
+    readonly v3: IVertex;
+}
+
+interface IRectangle {
+    readonly x: IVertex;
+    readonly y: IVertex;
+    readonly x2: IVertex;
+    readonly y2: IVertex;
+}
+
+enum SurfaceType {
+    Floor,
+    Ceiling,
+    Wall,
+    LowerWall,
+    UpperWall,
+    MiddleWall,
+}
+
+interface ISurface extends IRectangle {
+    readonly textureName?: string;
+    readonly lightLevel?: number;
+    readonly textureOffsetX?: number;
+    readonly textureOffsetY?: number;
+    readonly type: SurfaceType;
+}
+
+interface SidedefTexture {
+    readonly textureName: string;
+    readonly sidedef: SideDefEntry
+}
 
 class Triangulation {
-    // Rectangles are a compromise because floors require triangles.
-    // This exists for experimental types of rendering that require rectangles.
-    public static getRectangles(map: MapEntry): readonly IRectangle[] {
-        let rectangles: IRectangle[] = [];
+    private static findSidedefTexture(
+        right: SideDefEntry,
+        left: SideDefEntry | null,
+        getter: (s: SideDefEntry) => string
+    ): SidedefTexture | null {
+        const rightName = getter(right);
+        if (rightName != "-") return { textureName: rightName, sidedef: right };
+
+        if (left != null) {
+            const leftName = getter(left);
+            if (leftName != "-") return { textureName: leftName, sidedef: left };
+        }
+        return null;
+    }
+
+    // This should ultimately return triangles, but for simplicity, it currently returns rectangles.
+    public static getRectangles(map: MapEntry): readonly ISurface[] {
+        let rectangles: ISurface[] = [];
 
         for (const linedef of map.linedefs) {
-            const a = linedef.vertexA;
-            const b = linedef.vertexB;
-            const sectora = linedef.sidedefLeft?.sector;
-            const sectorb = linedef.sidedefRight?.sector;
-            const floora = sectora?.floorHeight ?? 0;
-            const floorb = sectorb?.floorHeight ?? 0;
-            const ceilinga = sectora?.ceilingHeight ?? 0;
-            const ceilingb = sectorb?.ceilingHeight ?? 0;
+            const b = linedef.vertexA;
+            const a = linedef.vertexB;
+            const sidedefFont = linedef.sidedefFont;
+            const sidedefBack = linedef.sidedefBack;
+            const sectorFront = sidedefFont?.sector;
+            const sectorBack = sidedefBack?.sector;
 
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, floora, floorb);
-            // Triangulation.rectToTriangleVertical(triangles, a.x, a.y, b.x, b.y, ceilinga, ceilingb);
-            const bl = { x: a.x, y: a.y, z: floora };
-            const br = { x: a.x, y: a.y, z: ceilinga };
-            const tl = { x: b.x, y: b.y, z: floorb };
-            const tr = { x: b.x, y: b.y, z: ceilingb };
-            rectangles.push({
-                x: bl,
-                y: bl,
-                x2: tl,
-                y2: tl
-            });
-            rectangles.push({
-                x: br,
-                y: br,
-                x2: tr,
-                y2: tr
-            });
+            // Single-sided wall: full wall from floor to ceiling.
+            if (sectorBack == null || sectorFront == null) {
+                const sidedef = sidedefFont ?? sidedefBack;
+                const sector = sectorFront ?? sectorBack;
+                if (sector == null || sidedef == null) continue;
+                rectangles.push({
+                    x:  { x: a.x, y: a.y, z: sector.floorHeight },
+                    y:  { x: a.x, y: a.y, z: sector.ceilingHeight },
+                    x2: { x: b.x, y: b.y, z: sector.floorHeight },
+                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight },
+                    textureName: sidedef.textureNameMiddle,
+                    lightLevel: sector.lightLevel,
+                    textureOffsetX: sidedef.textureXOffset,
+                    textureOffsetY: sidedef.textureYOffset,
+                    type: SurfaceType.Wall,
+                });
+                continue;
+            }
+
+            // Two-sided wall: draw walls where heights differ.
+            // Lower wall (step-up between different floor heights).
+            if (sectorBack.floorHeight != sectorFront.floorHeight) {
+                const lowerZ = Math.min(sectorBack.floorHeight, sectorFront.floorHeight);
+                const upperZ = Math.max(sectorBack.floorHeight, sectorFront.floorHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameLower);
+
+                if (sidedef != null) {
+                    rectangles.push({
+                        x:  { x: a.x, y: a.y, z: lowerZ },
+                        y:  { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: sidedef.textureName,
+                        lightLevel: sidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: sidedef.sidedef.textureXOffset,
+                        textureOffsetY: sidedef.sidedef.textureYOffset,
+                        type: SurfaceType.LowerWall,
+                    });
+                }
+            }
+
+            // Upper wall (between different ceiling heights).
+            if (sectorBack.ceilingHeight != sectorFront.ceilingHeight) {
+                const lowerZ = Math.min(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
+                const upperZ = Math.max(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameUpper);
+
+                if (sidedef != null) {
+                    rectangles.push({
+                        x:  { x: a.x, y: a.y, z: lowerZ },
+                        y:  { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: sidedef.textureName,
+                        lightLevel: sidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: sidedef.sidedef.textureXOffset,
+                        textureOffsetY: sidedef.sidedef.textureYOffset,
+                        type: SurfaceType.UpperWall,
+                    });
+                }
+            }
         }
 
         for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
@@ -78,12 +174,27 @@ class Triangulation {
                 continue;
             }
 
-            // Triangulation.rectToTriangleHorizontal(triangles, x, y, dx, dy, floorHeight);
+            // Floor.
+            // x2/y are swapped from ceiling so texture faces into the sector.
             rectangles.push({
                 x: { x: x, y: y, z: floorHeight },
-                y: { x: x, y: dy, z: floorHeight },
-                x2: { x: dx, y: y, z: floorHeight },
-                y2: { x: dx, y: dy, z: floorHeight }
+                x2: { x: x, y: dy, z: floorHeight },
+                y: { x: dx, y: y, z: floorHeight },
+                y2: { x: dx, y: dy, z: floorHeight },
+                textureName: sector.textureNameFloor,
+                lightLevel: sector.lightLevel,
+                type: SurfaceType.Floor,
+            });
+
+            // Ceiling.
+            rectangles.push({
+                x: { x: x, y: y, z: sector.ceilingHeight },
+                y: { x: x, y: dy, z: sector.ceilingHeight },
+                x2: { x: dx, y: y, z: sector.ceilingHeight },
+                y2: { x: dx, y: dy, z: sector.ceilingHeight },
+                textureName: sector.textureNameCeiling,
+                lightLevel: sector.lightLevel,
+                type: SurfaceType.Ceiling,
             });
         }
 
@@ -92,7 +203,8 @@ class Triangulation {
 
     public static rectToTriangleHorizontal(
         triangles: ITriangle[],
-        x: number, y: number, x2: number, y2: number,
+        x: number, y: number,
+        x2: number, y2: number,
         z: number): void
     {
         const bl = { x: x, y: y, z: z };
@@ -136,9 +248,7 @@ class Triangulation {
         let stlString = "solid doom_map\n";
 
         for (let triangle of triangles) {
-            const v1 = triangle.v1;
-            const v2 = triangle.v2;
-            const v3 = triangle.v3;
+            const {v1, v2, v3} = triangle;
             stlString += `facet normal 0 0 0\n`;
             stlString += `    outer loop\n`;
             stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;

@@ -84,6 +84,14 @@ class BinaryFileReader {
         return array;
     }
 
+    public readU32Array(length: number): Uint32Array {
+        const offset = this.position % 4;
+        const start = (this.position - offset) / 4;
+        const result = this.u32[offset].slice(start, start + length);
+        this.position += length * 4;
+        return result;
+    }
+
     public readFixedLengthString(length: number): string {
         const start = this.position;
         let sub = 0;
@@ -98,6 +106,17 @@ class BinaryFileReader {
         this.position = start + length;
         return result;
     }
+
+    // There's no great way to case-insensitive compare in JavaScript and the cases are mixed between definitions
+    // and references, so just read them as uppercase to be safe.
+    public readFixedLengthStringUppercase(length: number): string {
+        return this.readFixedLengthString(length).toUpperCase();
+    }
+}
+
+enum WadIdentifier {
+    IWAD = 0x44415749 as u32, // "IWAD"
+    PWAD = 0x44415750 as u32, // "PWAD"
 }
 
 enum WadIdentifier {
@@ -127,9 +146,15 @@ class WadFile {
     public readonly wadInfo: WadHeader;
     public readonly directory: readonly DirectoryEntry[];
     public readonly maps: readonly MapEntry[];
-    public readonly patches: Readonly<{[name: string]: PatchEntry}>;
+    public readonly patches: Map<string, PatchEntry>;
+    public readonly flats: Map<string, FlatEntry>;
+    public readonly palette: PaletteEntry;
+    public readonly patchNameDirectory: Map<number, DirectoryEntry>;
+    public readonly mapTextures: Map<string, MapTextureEntry>;
 
     private readonly reader: BinaryFileReader;
+    private readonly decodeImagesCache = new Map<string, DecodedImage>();
+    private readonly directoryMap: Map<string, DirectoryEntry>;
 
     constructor(file: ArrayBuffer) {
         this.reader = new BinaryFileReader(file);
@@ -137,8 +162,64 @@ class WadFile {
 
         this.reader.seek(this.wadInfo.infotableofs);
         this.directory = DirectoryEntry.read(this.reader, this.wadInfo.numlumps);
+        this.directoryMap = new Map(this.directory.map((entry) => [entry.name, entry]));
+
         this.maps = MapEntry.readAll(this, this.reader, this.directory);
         this.patches = PatchEntry.readAll(this, this.reader);
+        this.palette = PaletteEntry.read(this, this.reader);
+        this.flats = FlatEntry.readAll(this, this.reader);
+        this.patchNameDirectory = PatchNamesEntry.read(this, this.reader);
+        this.mapTextures = MapTextureEntry.readAll(this, this.reader);
+    }
+
+    public getDirectoryEntry(name: LumpName | string): DirectoryEntry {
+        const lump = this.directoryMap.get(name);
+        if (lump == null) throw new Error(`Lump "${name}" not found.`);
+        return lump;
+    }
+
+    public tryGetDirectoryEntry(name: LumpName | string): DirectoryEntry | undefined {
+        return this.directoryMap.get(name);
+    }
+
+    public getImage(name: string, defaultImage?: DecodedImage): DecodedImage {
+        const fromCache = this.decodeImagesCache.get(name);
+        if (fromCache != null) return fromCache;
+
+        const fromFlats = this.flats.get(name);
+        if (fromFlats != null) {
+            const data = fromFlats.decode(this.palette);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+
+        const fromPatches = this.patches.get(name);
+        if (fromPatches != null) {
+            const data = fromPatches.decode(this.palette);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+
+        const fromDirectoryMap = this.directoryMap.get(name);
+        if (fromDirectoryMap != null) {
+            const patch = new PatchEntry(this.reader, fromDirectoryMap);
+            const data = patch.decode(this.palette);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+
+        const fromMapTexture = this.mapTextures.get(name);
+        if (fromMapTexture != null) {
+            const data = fromMapTexture.decode(this);
+            this.decodeImagesCache.set(name, data);
+            return data;
+        }
+
+        // Cache unfound images so we don't spam the console with errors.
+        console.error(`Image "${name}" not found`);
+        const def = defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
+        this.decodeImagesCache.set(name, def);
+        return def;
     }
 }
 
@@ -192,6 +273,13 @@ class NodeEntry {
     }
 }
 
+enum LumpName {
+    PLAYPAL = "PLAYPAL",
+    PNAMES = "PNAMES",
+    TEXTURE1 = "TEXTURE1",
+    TEXTURE2 = "TEXTURE2",
+}
+
 // "lump"
 class DirectoryEntry {
     public readonly filepos: u32;
@@ -203,7 +291,7 @@ class DirectoryEntry {
     constructor(reader: BinaryFileReader) {
         this.filepos = reader.readU32();
         this.size = reader.readU32();
-        this.name = reader.readFixedLengthString(8);
+        this.name = reader.readFixedLengthStringUppercase(8);
     }
 
     public static read(reader: BinaryFileReader, count: number): readonly DirectoryEntry[] {
@@ -225,7 +313,7 @@ class DirectoryEntry {
         reader.pushPosition(this.filepos);
 
         const end = reader.position + this.size;
-        while (reader.position <= end) {
+        while (reader.position < end) {
             results.push(read(reader));
         }
 
@@ -308,13 +396,13 @@ class LinedefEntry {
     public readonly flags: LinedefFlags; // u16
     public readonly linetype: u16;
     public readonly tag: u16;
-    public readonly sidedefRightIndex: u16;
-    public readonly sidedefLeftIndex: u16;
+    public readonly sidedefFrontIndex: u16;
+    public readonly sidedefBackIndex: u16;
 
     public get vertexA(): Vertex { return this.map.vertexes[this.vertexAIndex]; }
     public get vertexB(): Vertex { return this.map.vertexes[this.vertexBIndex]; }
-    public get sidedefRight(): SideDefEntry { return this.map.sidedefs[this.sidedefRightIndex]; }
-    public get sidedefLeft(): SideDefEntry | null { return this.sidedefLeftIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefLeftIndex]; }
+    public get sidedefFont(): SideDefEntry { return this.map.sidedefs[this.sidedefFrontIndex]; }
+    public get sidedefBack(): SideDefEntry | null { return this.sidedefBackIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefBackIndex]; }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.vertexAIndex = reader.readU16();
@@ -322,8 +410,8 @@ class LinedefEntry {
         this.flags = reader.readU16();
         this.linetype = reader.readU16();
         this.tag = reader.readU16();
-        this.sidedefRightIndex = reader.readU16();
-        this.sidedefLeftIndex = reader.readU16();
+        this.sidedefFrontIndex = reader.readU16();
+        this.sidedefBackIndex = reader.readU16();
     }
 
     public hasFlag(flag: LinedefFlags): boolean {
@@ -372,17 +460,17 @@ class SideDefEntry {
     public readonly textureNameMiddle: string;
     public readonly sectorIndex: u16;
 
-    public get textureUpper(): PatchEntry { return this.map.wadFile.patches[this.textureNameUpper]; }
-    public get textureLower(): PatchEntry { return this.map.wadFile.patches[this.textureNameLower]; }
-    public get textureMiddle(): PatchEntry { return this.map.wadFile.patches[this.textureNameMiddle]; }
+    public get textureUpper(): DecodedImage { return this.map.wadFile.getImage(this.textureNameUpper); }
+    public get textureLower(): DecodedImage { return this.map.wadFile.getImage(this.textureNameLower); }
+    public get textureMiddle(): DecodedImage { return this.map.wadFile.getImage(this.textureNameMiddle); }
     public get sector(): SectorEntry { return this.map.sectors[this.sectorIndex]; }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.textureXOffset = reader.readI16();
         this.textureYOffset = reader.readI16();
-        this.textureNameUpper = reader.readFixedLengthString(8);
-        this.textureNameLower = reader.readFixedLengthString(8);
-        this.textureNameMiddle = reader.readFixedLengthString(8);
+        this.textureNameUpper = reader.readFixedLengthStringUppercase(8);
+        this.textureNameLower = reader.readFixedLengthStringUppercase(8);
+        this.textureNameMiddle = reader.readFixedLengthStringUppercase(8);
         this.sectorIndex = reader.readU16();
     }
 
@@ -401,14 +489,14 @@ class SectorEntry {
     public readonly specialType: i16;
     public readonly tag: i16;
 
-    public get textureFloor(): PatchEntry { return this.map.wadFile.patches[this.textureNameFloor]; }
-    public get textureCeiling(): PatchEntry { return this.map.wadFile.patches[this.textureNameCeiling]; }
+    public get textureFloor(): DecodedImage { return this.map.wadFile.getImage(this.textureNameFloor); }
+    public get textureCeiling(): DecodedImage { return this.map.wadFile.getImage(this.textureNameCeiling); }
 
     constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
         this.floorHeight = reader.readI16();
         this.ceilingHeight = reader.readI16();
-        this.textureNameFloor = reader.readFixedLengthString(8);
-        this.textureNameCeiling = reader.readFixedLengthString(8);
+        this.textureNameFloor = reader.readFixedLengthStringUppercase(8);
+        this.textureNameCeiling = reader.readFixedLengthStringUppercase(8);
         this.lightLevel = reader.readI16();
         this.specialType = reader.readI16();
         this.tag = reader.readI16();
@@ -450,11 +538,11 @@ class SubSectorEntry {
 
     public readonly segments: readonly SegmentEntry[];
 
-    constructor( map: MapEntry, reader: BinaryFileReader) {
+    constructor(map: MapEntry, reader: BinaryFileReader) {
         this.segCount = reader.readI16();
         this.firstSegIndex = reader.readI16();
 
-        this.segments = map.segments.slice(this.firstSegIndex, this.segCount);
+        this.segments = map.segments.slice(this.firstSegIndex, this.firstSegIndex + this.segCount);
     }
 
     public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly SubSectorEntry[] {
@@ -527,7 +615,7 @@ class MapEntry {
     private getLinedefsPerSector(): Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}> {
         const linedefsPerSector: {[sectorIndex: number]: LinedefEntry[]} = {};
         for (const linedef of this.linedefs) {
-            for (const sidedef of [linedef.sidedefLeft, linedef.sidedefRight]) {
+            for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null) continue;
 
                 let linedefs = linedefsPerSector[sidedef.sectorIndex];
@@ -589,14 +677,77 @@ class MapEntry {
     }
 }
 
+class DecodedImage {
+    constructor(
+        public readonly width: number,
+        public readonly height: number,
+        public readonly pixels: Uint8Array)
+    {}
+}
+
+// https://doomwiki.org/wiki/Flat
+class FlatEntry {
+    private static readonly width = 64;
+    private static readonly height = 64;
+
+    public static readonly default = FlatEntry.magentaCheckerBoard();
+
+    public readonly pixels: Uint8Array;
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.pushPosition(directoryEntry.filepos);
+        this.pixels = reader.readArray(FlatEntry.width * FlatEntry.height);
+        reader.popPosition();
+    }
+
+    public decode(palette: PaletteEntry): DecodedImage {
+        const buffer = new ArrayBuffer(FlatEntry.width * FlatEntry.height * 4);
+        const decodedPixels = new Uint32Array(buffer);
+        for (let i = 0; i < FlatEntry.width * FlatEntry.height; ++i) {
+            decodedPixels[i] = palette.palette[this.pixels[i]];
+        }
+
+        return new DecodedImage(FlatEntry.width, FlatEntry.height, new Uint8Array(buffer));
+    }
+
+    public static readAll(file: WadFile, reader: BinaryFileReader): Map<string, FlatEntry> {
+        const flats = new Map<string, FlatEntry>();
+        const startIndex = file.directory.findIndex((dir) => dir.name == "F_START" || dir.name == "FF_START");
+        if (startIndex == -1) return flats;
+
+        for (let i = startIndex + 1; i < file.directory.length; ++i) {
+            const dir = file.directory[i];
+            if (dir.name == "F_END" || dir.name == "FF_END") break;
+            if (dir.size != 4096) continue;
+            flats.set(dir.name, new FlatEntry(reader, dir));
+        }
+
+        return flats;
+    }
+
+    private static magentaCheckerBoard(): DecodedImage {
+        const pixels = new Uint8Array(FlatEntry.width * FlatEntry.height * 4);
+        for (let i = 0; i < FlatEntry.width * FlatEntry.height; ++i) {
+            const checker = ((i % 64) ^ Math.floor(i / 64)) & 8;
+            const offset = i * 4;
+            pixels[offset] = checker ? 255 : 128;
+            pixels[offset + 1] = 0;
+            pixels[offset + 2] = checker ? 255 : 128;
+            pixels[offset + 3] = 255;
+        }
+
+        return new DecodedImage(FlatEntry.width, FlatEntry.height, pixels);
+    }
+}
+
 // https://doomwiki.org/wiki/Picture_format
 class PatchEntry {
     public readonly width: u16;
     public readonly height: u16;
     public readonly leftOffset: i16;
     public readonly topOffset: i16;
-    public readonly columnofs: readonly u32[];
-    public readonly posts: readonly PatchPostEntry[];
+    public readonly columnofs: Uint32Array;
+    public readonly columns: readonly PatchColumn[];
 
     constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
         reader.position = directoryEntry.filepos;
@@ -605,24 +756,31 @@ class PatchEntry {
         this.height = reader.readU16();
         this.leftOffset = reader.readI16();
         this.topOffset = reader.readI16();
-        const columnofs: u32[] = [];
-        for (let i = 0; i < this.width; ++i) {
-            columnofs.push(reader.readU32());
-        }
-        this.columnofs = columnofs;
-        // Save position at the end of the patch entry.
+        this.columnofs = reader.readU32Array(this.width);
+
         reader.pushPosition();
-        const posts: PatchPostEntry[] = [];
-        for (const offset of columnofs) {
+        const columns: PatchColumn[] = [];
+        for (const offset of this.columnofs) {
             reader.position = offset + relative;
-            posts.push(new PatchPostEntry(reader));
+            // Each column is a list of posts terminated by a 0xFF topdelta.
+            const posts: PatchPostEntry[] = [];
+            while (true) {
+                const topdelta = reader.readU8();
+                if (topdelta == 0xFF) break;
+                const length = reader.readU8();
+                reader.readU8(); // unused padding
+                const data = reader.readArray(length);
+                reader.readU8(); // unused padding
+                posts.push(new PatchPostEntry(topdelta, length, data));
+            }
+            columns.push(new PatchColumn(posts));
         }
-        this.posts = posts;
+        this.columns = columns;
         reader.popPosition();
     }
 
-    public static readAll(file: WadFile, reader: BinaryFileReader): Readonly<{[name: string]: PatchEntry}> {
-        const patches: {[name: string]: PatchEntry} = {};
+    public static readAll(file: WadFile, reader: BinaryFileReader): Map<string, PatchEntry> {
+        const patches = new Map<string, PatchEntry>();
 
         const firstSpriteIndex = file.directory.findIndex((dir) => dir.name == "S_START" || dir.name == "SS_START");
         if (firstSpriteIndex == -1) return patches;
@@ -635,25 +793,218 @@ class PatchEntry {
                 continue;
             }
 
-            patches[dir.name] = new PatchEntry(reader, dir);
+            patches.set(dir.name, new PatchEntry(reader, dir));
         }
 
         return patches;
     }
+
+    public decode(palette: PaletteEntry): DecodedImage {
+        const buffer = new ArrayBuffer(this.width * this.height * 4);
+        const pixels = new Uint32Array(buffer);
+
+        for (let x = 0; x < this.width; ++x) {
+            const column = this.columns[x];
+            for (const post of column.posts) {
+                let destY = post.topdelta * this.width + x;
+                for (let y = 0; y < post.length; ++y, destY += this.width) {
+                    pixels[destY] = palette.palette[post.data[y]];
+                }
+            }
+        }
+
+        return new DecodedImage(this.width, this.height, new Uint8Array(buffer));
+    }
+}
+
+class PatchColumn {
+    constructor(public readonly posts: readonly PatchPostEntry[]) {}
 }
 
 class PatchPostEntry {
-    public readonly topdelta: u8;
-    public readonly length: u8;
-    // public readonly unused: u8;
-    public readonly data: Uint8Array;
-    // public readonly unused2: u8;
+    constructor(
+        public readonly topdelta: u8,
+        public readonly length: u8,
+        public readonly data: Uint8Array,
+    ) {}
+}
+
+// https://doomwiki.org/wiki/PLAYPAL
+class PaletteEntry {
+    public readonly palette: Uint32Array;
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+        this.palette = new Uint32Array(256);
+        // Leave index 0 as transparent, since that's how the game treats it.
+        for (let i = 0; i < 256; ++i) {
+            const r = reader.readU8();
+            const g = reader.readU8();
+            const b = reader.readU8();
+            const a = 255;
+            this.palette[i] = (a << 24) | (b << 16) | (g << 8) | r;
+        }
+    }
+
+    public static read(file: WadFile, reader: BinaryFileReader): PaletteEntry {
+        return new PaletteEntry(reader, file.getDirectoryEntry(LumpName.PLAYPAL));
+    }
+}
+
+// https://doomwiki.org/wiki/PNAMES
+class PatchNamesEntry {
+    public readonly names: readonly string[];
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+
+        const count = reader.readU32();
+        const names = new Array(count);
+        for (let i = 0; i < count; ++i) {
+            names[i] = reader.readFixedLengthStringUppercase(8);
+        }
+
+        this.names = names;
+    }
+
+    public static read(file: WadFile, reader: BinaryFileReader): Map<number, DirectoryEntry> {
+        const entry = file.getDirectoryEntry(LumpName.PNAMES);
+        const patchNamesEntry = new PatchNamesEntry(reader, entry);
+
+        // Build a lookup from the full directory using the FIRST match per name,
+        // since directoryMap can clobber patches with later same-named map lumps.
+        const firstByName = new Map<string, DirectoryEntry>();
+        for (const dirEntry of file.directory) {
+            if (!firstByName.has(dirEntry.name)) {
+                firstByName.set(dirEntry.name, dirEntry);
+            }
+        }
+
+        const map = new Map<number, DirectoryEntry>();
+        for (let i = 0; i < patchNamesEntry.names.length; ++i) {
+            const name = patchNamesEntry.names[i];
+            const dirEntry = firstByName.get(name);
+            if (dirEntry == null) {
+                console.warn(`PNAMES[${i}]: patch "${name}" not found in directory`);
+                continue;
+            }
+            map.set(i, dirEntry);
+        }
+
+        return map;
+    }
+}
+
+class TextureEntry {
+    public readonly count: u32;
+    public readonly offsets: Uint32Array;
+    public readonly textures: readonly MapTextureEntry[];
+
+    constructor(reader: BinaryFileReader, directoryEntry: DirectoryEntry) {
+        reader.position = directoryEntry.filepos;
+
+        this.count = reader.readU32();
+        this.offsets = reader.readU32Array(this.count);
+
+        const textures = new Array<MapTextureEntry>(this.count);
+        for (let i = 0; i < this.count; ++i) {
+            reader.position = this.offsets[i] + directoryEntry.filepos;
+            textures[i] = new MapTextureEntry(reader);
+        }
+
+        this.textures = textures;
+    }
+}
+
+// https://doomwiki.org/wiki/TEXTURE1_and_TEXTURE2
+class MapTextureEntry {
+    public readonly name: string;
+    public readonly masked: boolean;
+    public readonly width: u16;
+    public readonly height: u16;
+    public readonly patchCount: u16;
+    public readonly patches: readonly MapTexturePatchEntry[];
 
     constructor(reader: BinaryFileReader) {
-        this.topdelta = reader.readU8();
-        this.length = reader.readU8();
-        reader.readU8(); // unused
-        this.data = reader.readArray(this.length);
-        reader.readU8(); // unused
+        this.name = reader.readFixedLengthStringUppercase(8);
+        this.masked = reader.readU32() != 0;
+        this.width = reader.readU16();
+        this.height = reader.readU16();
+        reader.readU32(); // unused
+        this.patchCount = reader.readU16();
+
+        const patches = new Array<MapTexturePatchEntry>(this.patchCount);
+        for (let i = 0; i < this.patchCount; ++i) {
+            patches[i] = new MapTexturePatchEntry(reader);
+        }
+
+        this.patches = patches;
+    }
+
+    public static readAll(file: WadFile, reader: BinaryFileReader): Map<string, MapTextureEntry> {
+        const map = new Map<string, MapTextureEntry>();
+
+        for (const lumpName of [LumpName.TEXTURE1, LumpName.TEXTURE2]) {
+            const entry = file.tryGetDirectoryEntry(lumpName);
+            if (entry == null) continue;
+
+            const textureEntry = new TextureEntry(reader, entry);
+            for (const texture of textureEntry.textures) {
+                map.set(texture.name, texture);
+            }
+        }
+
+        return map;
+    }
+
+    public decode(wadFile: WadFile): DecodedImage {
+        const buffer = new ArrayBuffer(this.width * this.height * 4);
+        const pixels = new Uint32Array(buffer);
+
+        for (const patch of this.patches) {
+            const pname = wadFile.patchNameDirectory.get(patch.patchNameIndex);
+            if (pname == null) {
+                console.error(`Missing patch name for index ${patch.patchNameIndex}.`);
+                continue;
+            }
+
+            const source = wadFile.getImage(pname.name, FlatEntry.default);
+            const sourceU32 = new Uint32Array(source.pixels.buffer);
+            let sourceIndex = 0;
+            for (let y = 0; y < source.height; ++y) {
+                const destY = patch.originY + y;
+                if (destY < 0 || destY >= this.height) {
+                    sourceIndex += source.width;
+                    continue;
+                }
+
+                let destIndex = destY * this.width + patch.originX;
+                for (let x = 0; x < source.width; ++x, ++destIndex, ++sourceIndex) {
+                    const destX = patch.originX + x;
+                    if (destX < 0 || destX >= this.width) continue;
+
+                    const pixel = sourceU32[sourceIndex];
+                    pixels[destIndex] = pixel;
+                }
+            }
+        }
+
+        return new DecodedImage(this.width, this.height, new Uint8Array(buffer));
+    }
+}
+
+class MapTexturePatchEntry {
+    public readonly originX: i16;
+    public readonly originY: i16;
+    public readonly patchNameIndex: i16;
+    public readonly stepdir: i16; // unused
+    public readonly colormap: i16; // unused
+
+    constructor(reader: BinaryFileReader) {
+        this.originX = reader.readI16();
+        this.originY = reader.readI16();
+        this.patchNameIndex = reader.readU16();
+        this.stepdir = reader.readI16();
+        this.colormap = reader.readI16();
     }
 }

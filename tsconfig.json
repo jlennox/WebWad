@@ -1,8 +1,10 @@
 {
     "compilerOptions": {
-        "strict": true,
         "target": "ESNext",
         "outFile": "out.js",
+        "strict": true,
+        "noImplicitThis": true,
+        "sourceMap": true,
     },
     "include": [
         "**/*"

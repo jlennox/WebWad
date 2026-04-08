@@ -116,7 +116,7 @@ class mat4 {
  * @param {Number} rad the angle to rotate the matrix by
  * @returns {mat4} out
  */
-public static rotateX(out, a, rad) {
+public static rotateX(out: matrix, a: Float32Array, rad: number): matrix {
     let s = Math.sin(rad);
     let c = Math.cos(rad);
     let a10 = a[4];
@@ -158,7 +158,7 @@ public static rotateX(out, a, rad) {
    * @param {Number} rad the angle to rotate the matrix by
    * @returns {mat4} out
    */
-  public static rotateY(out, a, rad) {
+  public static rotateY(out: matrix, a: Float32Array, rad: number): matrix {
     let s = Math.sin(rad);
     let c = Math.cos(rad);
     let a00 = a[0];
