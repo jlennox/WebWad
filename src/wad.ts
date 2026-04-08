@@ -119,11 +119,6 @@ enum WadIdentifier {
     PWAD = 0x44415750 as u32, // "PWAD"
 }
 
-enum WadIdentifier {
-    IWAD = 0x44415749 as u32, // "IWAD"
-    PWAD = 0x44415750 as u32, // "PWAD"
-}
-
 class WadHeader {
     public readonly identifier: WadIdentifier; // u32
     public readonly numlumps: u32;

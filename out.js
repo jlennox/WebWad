@@ -1,6 +1,7 @@
 "use strict";
 class HitTester {
     // Storing in Int16Array to (hopefully...) improve memory locality and speed.
+    // If desired, these could be in some sort of binary tree (stored in a flat array) of rects for faster hit testing.
     points = null;
     index = 0;
     infos = [];
@@ -46,14 +47,6 @@ class HitTester {
             return { info: this.infos[i], index: i };
         }
         return null;
-    }
-}
-class Matrix {
-    static vectexMultiply(m, v) {
-        return {
-            x: m.a * v.x + m.c * v.y + m.e,
-            y: m.b * v.x + m.d * v.y + m.f
-        };
     }
 }
 var SurfaceType;
@@ -1536,6 +1529,14 @@ class mat4 {
         out[10] = a02 * s + a22 * c;
         out[11] = a03 * s + a23 * c;
         return out;
+    }
+}
+class Matrix {
+    static vectexMultiply(m, v) {
+        return {
+            x: m.a * v.x + m.c * v.y + m.e,
+            y: m.b * v.x + m.d * v.y + m.f
+        };
     }
 }
 class UserFileInput {

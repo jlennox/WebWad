@@ -5,8 +5,14 @@ const enum PointIndex {
     NumberOfEntries = 3
 }
 
+interface HitTestResult<TInfo> {
+    readonly info: TInfo;
+    readonly index: number;
+}
+
 class HitTester<TInfo> {
     // Storing in Int16Array to (hopefully...) improve memory locality and speed.
+    // If desired, these could be in some sort of binary tree (stored in a flat array) of rects for faster hit testing.
     private points: Int16Array | null = null;
     private index: number = 0;
     private infos: TInfo[] = [];
@@ -37,10 +43,7 @@ class HitTester<TInfo> {
         ++this.index;
     }
 
-    public hitTest(matrix: DOMMatrix, x: i16, y: i16): {
-        info: TInfo,
-        index: number
-    } | null {
+    public hitTest(matrix: DOMMatrix, x: i16, y: i16): HitTestResult<TInfo> | null {
         const points = this.points;
         if (points == null) return null;
 
