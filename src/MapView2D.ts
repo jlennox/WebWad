@@ -3,6 +3,7 @@
 class MapView2D extends MapView {
     private readonly viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     private readonly thingHitTester = new HitTester<ThingEntry>();
+    private readonly imageCache = new Map<string, ImageData[]>();
 
     private highlightedThingIndex: number = -1;
     private dashedStrokeOffset: number = 0;
@@ -82,6 +83,27 @@ class MapView2D extends MapView {
 
     protected override onKeyUp(_event: KeyboardEvent): void {}
 
+    private getImageData(name: string | undefined): ImageData[] {
+        if (name == null) return [];
+
+        const cached = this.imageCache.get(name);
+        if (cached != null) return cached;
+
+        const images: ImageData[] = [];
+        for (const patch of this.wad.patches) {
+            const patchName = patch[0];
+            if (!patchName.startsWith(name)) continue;
+
+            const image = this.wad.getImage(patchName);
+            const uint8 = new Uint8ClampedArray(image.pixels);
+            const imageData = new ImageData(uint8, image.width, image.height);
+            images.push(imageData);
+        }
+
+        this.imageCache.set(name, images);
+        return images;
+    }
+
     protected override draw(): void {
         const context = this.canvas.getContext("2d");
         if (context == null) throw new Error("Unable to get 2d context");
@@ -126,7 +148,7 @@ class MapView2D extends MapView {
                 continue;
             }
 
-            // Are the thing's x/y actually the centers?
+            // TODO: Are the thing's x/y actually the centers?
             const centerX = thing.x;
             const centerY = thing.y;
             const radius = thing.description.radius;
@@ -196,6 +218,10 @@ class MapView2D extends MapView {
             context.fillStyle = "Black";
             context.textBaseline = "top";
             context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
+            const thingImage = this.getImageData(thing.description!.sprite);
+            if (thingImage.length > 0) {
+                context.putImageData(thingImage[0], boxX + 5, boxY + 25);
+            }
             context.stroke();
         }
 

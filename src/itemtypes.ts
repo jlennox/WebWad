@@ -1,3 +1,4 @@
+// https://doomwiki.org/wiki/Thing_types
 interface ThingDescription {
     readonly version: string;
     readonly radius: number;

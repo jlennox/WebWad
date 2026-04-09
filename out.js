@@ -154,7 +154,7 @@ class UserFileInputUI {
         context.font = "20px serif";
         drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+        drawBottomLeft("Controls:\nTab: Switch 2D/3D\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
     }
 }
 /// <reference path="UserFileInput.ts" />
@@ -295,6 +295,7 @@ const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView
 class MapView2D extends MapView {
     viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     thingHitTester = new HitTester();
+    imageCache = new Map();
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
     constructor(wad) {
@@ -360,6 +361,25 @@ class MapView2D extends MapView {
         console.log(stl);
     }
     onKeyUp(_event) { }
+    getImageData(name) {
+        if (name == null)
+            return [];
+        const cached = this.imageCache.get(name);
+        if (cached != null)
+            return cached;
+        const images = [];
+        for (const patch of this.wad.patches) {
+            const patchName = patch[0];
+            if (!patchName.startsWith(name))
+                continue;
+            const image = this.wad.getImage(patchName);
+            const uint8 = new Uint8ClampedArray(image.pixels);
+            const imageData = new ImageData(uint8, image.width, image.height);
+            images.push(imageData);
+        }
+        this.imageCache.set(name, images);
+        return images;
+    }
     draw() {
         const context = this.canvas.getContext("2d");
         if (context == null)
@@ -400,7 +420,7 @@ class MapView2D extends MapView {
             if (thing.description == null) {
                 continue;
             }
-            // Are the thing's x/y actually the centers?
+            // TODO: Are the thing's x/y actually the centers?
             const centerX = thing.x;
             const centerY = thing.y;
             const radius = thing.description.radius;
@@ -461,6 +481,10 @@ class MapView2D extends MapView {
             context.fillStyle = "Black";
             context.textBaseline = "top";
             context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
+            const thingImage = this.getImageData(thing.description.sprite);
+            if (thingImage.length > 0) {
+                context.putImageData(thingImage[0], boxX + 5, boxY + 25);
+            }
             context.stroke();
         }
         context.setTransform(undefined);
@@ -726,8 +750,8 @@ class MapView3D extends MapView {
             const textureHeight = graphic.height || 64;
             const offsetU = rect.textureOffsetX / textureWidth;
             const offsetV = rect.textureOffsetY / textureHeight;
-            const uLeft = offsetU;
-            const uRight = offsetU + linedefLength / textureWidth;
+            const uLeft = offsetU + linedefLength / textureWidth;
+            const uRight = offsetU;
             const vTop = offsetV;
             const vBottom = offsetV + wallHeight / textureHeight;
             // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
@@ -2518,7 +2542,7 @@ class WadFile {
     tryGetDirectoryEntry(name) {
         return this.directoryMap.get(name);
     }
-    getImage(name, defaultImage) {
+    tryGetImage(name) {
         const fromCache = this.decodeImagesCache.get(name);
         if (fromCache != null)
             return fromCache;
@@ -2547,6 +2571,12 @@ class WadFile {
             this.decodeImagesCache.set(name, data);
             return data;
         }
+        return undefined;
+    }
+    getImage(name, defaultImage) {
+        const fromCache = this.tryGetImage(name);
+        if (fromCache != null)
+            return fromCache;
         // Cache unfound images so we don't spam the console with errors.
         console.error(`Image "${name}" not found`);
         const def = defaultImage ?? new DecodedImage(0, 0, new Uint8Array());

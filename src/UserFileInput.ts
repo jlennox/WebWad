@@ -123,6 +123,6 @@ class UserFileInputUI {
         context.font = "20px serif";
         drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+        drawBottomLeft("Controls:\nTab: Switch 2D/3D\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
     }
 }

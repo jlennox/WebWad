@@ -177,7 +177,7 @@ class WadFile {
         return this.directoryMap.get(name);
     }
 
-    public getImage(name: string, defaultImage?: DecodedImage): DecodedImage {
+    public tryGetImage(name: string): DecodedImage | undefined {
         const fromCache = this.decodeImagesCache.get(name);
         if (fromCache != null) return fromCache;
 
@@ -209,6 +209,13 @@ class WadFile {
             this.decodeImagesCache.set(name, data);
             return data;
         }
+
+        return undefined;
+    }
+
+    public getImage(name: string, defaultImage?: DecodedImage): DecodedImage {
+        const fromCache = this.tryGetImage(name);
+        if (fromCache != null) return fromCache;
 
         // Cache unfound images so we don't spam the console with errors.
         console.error(`Image "${name}" not found`);
