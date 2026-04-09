@@ -268,8 +268,8 @@ class MapView3D extends MapView {
             const offsetU = rect.textureOffsetX! / textureWidth;
             const offsetV = rect.textureOffsetY! / textureHeight;
 
-            const uLeft = offsetU;
-            const uRight = offsetU + linedefLength / textureWidth;
+            const uLeft = offsetU + linedefLength / textureWidth;
+            const uRight = offsetU;
             const vTop = offsetV;
             const vBottom = offsetV + wallHeight / textureHeight;
 
