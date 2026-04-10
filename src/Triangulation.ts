@@ -26,9 +26,7 @@ enum SurfaceType {
     Floor,
     Ceiling,
     Wall,
-    LowerWall,
-    UpperWall,
-    MiddleWall,
+    Sprite,
 }
 
 interface ISurface extends IRectangle {
@@ -108,7 +106,7 @@ class Triangulation {
                         lightLevel: sidedef.sidedef.sector.lightLevel,
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
-                        type: SurfaceType.LowerWall,
+                        type: SurfaceType.Wall,
                     });
                 }
             }
@@ -129,7 +127,7 @@ class Triangulation {
                         lightLevel: sidedef.sidedef.sector.lightLevel,
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
-                        type: SurfaceType.UpperWall,
+                        type: SurfaceType.Wall,
                     });
                 }
             }
@@ -195,6 +193,30 @@ class Triangulation {
                 textureName: sector.textureNameCeiling,
                 lightLevel: sector.lightLevel,
                 type: SurfaceType.Ceiling,
+            });
+        }
+
+        for (const thing of map.things) {
+            const graphic = map.wadFile.getImageData(thing.description?.sprite)[0];
+            if (graphic == null) continue;
+
+            const halfWidth = graphic.width / 2;
+            const height = graphic.height;
+            const sector = map.findSector(thing.x, thing.y);
+            if (sector == null) {
+                console.error(`Unable to find sector for thing at (${thing.x}, ${thing.y}). Skipping.`, thing);
+                continue;
+            }
+
+            const floorZ = sector.floorHeight;
+            rectangles.push({
+                x:  { x: thing.x - halfWidth, y: thing.y, z: floorZ },
+                y:  { x: thing.x - halfWidth, y: thing.y, z: floorZ + height },
+                x2: { x: thing.x + halfWidth, y: thing.y, z: floorZ },
+                y2: { x: thing.x + halfWidth, y: thing.y, z: floorZ + height },
+                textureName: graphic.name,
+                lightLevel: 255,
+                type: SurfaceType.Sprite,
             });
         }
 

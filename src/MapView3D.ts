@@ -15,7 +15,7 @@ class MapView3D extends MapView {
     private readonly whiteTexture: WebGLTexture;
     private readonly textureCache: Map<string, WebGLTexture> = new Map();
 
-    private drawGroups: { textureName: string | null; start: number; count: number }[] = [];
+    private drawGroups: { textureName: string | null; start: number; count: number; isSprite: boolean }[] = [];
     private cameraPosition = { x: 0, y: 0, z: 0 };
     private cameraYaw: number = 0;
     private cameraPitch: number = 0;
@@ -51,6 +51,7 @@ class MapView3D extends MapView {
 
             void main() {
                 vec4 texColor = texture2D(uTexture, vTexCoord);
+                if (texColor.a < 0.5) discard;
                 gl_FragColor = vec4(vColor * texColor.rgb, texColor.a);
             }
         `;
@@ -151,41 +152,22 @@ class MapView3D extends MapView {
         );
     }
 
-    private getTexture(name: string | null): WebGLTexture {
-        if (name == null || name == "-") return this.whiteTexture;
-
-        let texture = this.textureCache.get(name);
-        if (texture != null) return texture;
-
-        const gl = this.gl;
-        const flat = this.wad.getImage(name, FlatEntry.default);
-        texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-        this.textureCache.set(name, texture);
-        return texture;
-    }
-
     private buildGeometry(): void {
         const gl = this.gl;
         const positions: number[] = [];
         const colors: number[] = [];
         const textureCoords: number[] = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
+        const sprites: ISurface[] = [];
 
         // Separate walls (untextured) from textured flats, grouped by texture name.
-        const wallRects: ISurface[] = [];
         const texturedGroups: Map<string, ISurface[]> = new Map();
 
         for (const rect of rectangles) {
-            if (rect.textureName == null || rect.textureName == "-") {
-                wallRects.push(rect);
+            if (rect.textureName == null || rect.textureName == "-") continue;
+
+            if (rect.type == SurfaceType.Sprite) {
+                sprites.push(rect);
                 continue;
             }
 
@@ -200,25 +182,31 @@ class MapView3D extends MapView {
         this.drawGroups = [];
         let vertexCount = 0;
 
-        // Emit wall geometry (flat-shaded, no texture).
-        const wallStart = vertexCount;
-        for (const rect of wallRects) {
-            this.emitRect(rect, positions, colors, textureCoords, false);
-            vertexCount += 6;
-        }
-
-        if (vertexCount > wallStart) {
-            this.drawGroups.push({ textureName: null, start: wallStart, count: vertexCount - wallStart });
-        }
-
         // Emit textured groups (floors/ceilings).
         for (const [textureName, rects] of texturedGroups) {
             const groupStart = vertexCount;
             for (const rect of rects) {
-                this.emitRect(rect, positions, colors, textureCoords, true);
+                this.emitRect(rect, positions, colors, textureCoords);
                 vertexCount += 6;
             }
-            this.drawGroups.push({ textureName, start: groupStart, count: vertexCount - groupStart });
+            this.drawGroups.push({
+                textureName,
+                start: groupStart,
+                count: vertexCount - groupStart,
+                isSprite: false
+            });
+        }
+
+        for (const rect of sprites) {
+            const groupStart = vertexCount;
+            this.emitRect(rect, positions, colors, textureCoords);
+            vertexCount += 6;
+            this.drawGroups.push({
+                textureName: rect.textureName ?? null,
+                start: groupStart,
+                count: vertexCount - groupStart,
+                isSprite: true
+            });
         }
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
@@ -236,7 +224,6 @@ class MapView3D extends MapView {
         positions: number[],
         colors: number[],
         textureCoords: number[],
-        isTextured: boolean,
     ): void {
         // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
         // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
@@ -256,7 +243,20 @@ class MapView3D extends MapView {
         const brightness = (rect.lightLevel ?? 128) / 255;
         const isWall = rect.textureOffsetX != null;
 
-        if (isTextured && isWall) {
+        if (rect.type == SurfaceType.Sprite) {
+            textureCoords.push(
+                0, 1,   // v0: bottom-left
+                0, 0,   // v1: top-left
+                1, 1,   // v2: bottom-right
+                1, 1,   // v2: bottom-right
+                0, 0,   // v1: top-left
+                1, 0,   // v3: top-right
+            );
+
+            for (let i = 0; i < 6; ++i) {
+                colors.push(brightness, brightness, brightness);
+            }
+        } else if (isWall) {
             // Wall UVs: U = distance along linedef, V = height position.
             const linedefLength = Math.sqrt(
                 (rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2
@@ -286,7 +286,7 @@ class MapView3D extends MapView {
             for (let i = 0; i < 6; ++i) {
                 colors.push(brightness, brightness, brightness);
             }
-        } else if (isTextured) {
+        } else {
             // Flat UVs: tile at 64 world units using original DOOM x/y coords.
             const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
             const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
@@ -296,29 +296,6 @@ class MapView3D extends MapView {
 
             for (let i = 0; i < 6; ++i) {
                 colors.push(brightness, brightness, brightness);
-            }
-        } else {
-            // Untextured: UV doesn't matter (white 1x1 texture), use flat shading.
-            for (let i = 0; i < 6; ++i) {
-                textureCoords.push(0, 0);
-            }
-
-            const edge1x = v1x - v0x, edge1y = v1y - v0y, edge1z = v1z - v0z;
-            const edge2x = v2x - v0x, edge2y = v2y - v0y, edge2z = v2z - v0z;
-            let normalX = edge1y * edge2z - edge1z * edge2y;
-            let normalY = edge1z * edge2x - edge1x * edge2z;
-            let normalZ = edge1x * edge2y - edge1y * edge2x;
-            const length = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
-            if (length > 0) {
-                normalX /= length;
-                normalY /= length;
-                normalZ /= length;
-            }
-
-            const lightDot = Math.abs(normalX * 0.3 + normalY * 0.7 + normalZ * 0.2);
-            const wallBrightness = 0.25 + 0.75 * lightDot;
-            for (let i = 0; i < 6; ++i) {
-                colors.push(0.55 * wallBrightness, 0.45 * wallBrightness, 0.35 * wallBrightness);
             }
         }
     }
@@ -416,8 +393,30 @@ class MapView3D extends MapView {
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this.uTexture, 0);
 
+        function getTexture(viewer: MapView3D, name: string | null, isSprite: boolean): WebGLTexture {
+            if (name == null || name == "-") return viewer.whiteTexture;
+
+            let texture = viewer.textureCache.get(name);
+            if (texture != null) return texture;
+
+            const gl = viewer.gl;
+            const flat = viewer.wad.getImage(name, FlatEntry.default);
+            texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
+            const wrap = isSprite ? gl.CLAMP_TO_EDGE : gl.REPEAT;
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+            viewer.textureCache.set(name, texture);
+            return texture;
+        }
+
         for (const group of this.drawGroups) {
-            gl.bindTexture(gl.TEXTURE_2D, this.getTexture(group.textureName));
+            gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
         }
     }

@@ -694,6 +694,28 @@ class MapEntry {
         return NodeEntry.loadAll(this.reader, this.entries.nodes);
     }
 
+    public findSector(x: number, y: number): SectorEntry | undefined {
+        for (const [sectorIndex, linedefs] of Object.entries(this.linedefsPerSector)) {
+            let crossings = 0;
+            for (const linedef of linedefs) {
+                const ax = linedef.vertexA.x;
+                const ay = linedef.vertexA.y;
+                const bx = linedef.vertexB.x;
+                const by = linedef.vertexB.y;
+                if ((ay > y) != (by > y)) {
+                    const xIntersect = ax + (y - ay) * (bx - ax) / (by - ay);
+                    if (x < xIntersect) crossings++;
+                }
+            }
+
+            if (crossings % 2 == 1) {
+                const sector = this.sectors[parseInt(sectorIndex)];
+                return sector;
+            }
+        }
+        return undefined;
+    }
+
     public static readAll(
         wadFile: WadFile,
         reader: BinaryFileReader,
