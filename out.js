@@ -515,18 +515,46 @@ class MapView2D extends MapView {
     }
 }
 /// <reference path="ui.ts" />
+class VertexProgramInputs {
+    aVertexPosition;
+    aVertexColor;
+    aTexCoord;
+    aSpriteOffset;
+    uProjectionMatrix;
+    uModelViewMatrix;
+    uTexture;
+    uCameraRight;
+    constructor(gl, program) {
+        function getAttribute(name) {
+            const location = gl.getAttribLocation(program, name);
+            if (location === -1)
+                throw new Error(`Unable to find attribute "${name}".`);
+            return location;
+        }
+        function getUniform(name) {
+            const location = gl.getUniformLocation(program, name);
+            if (location == null)
+                throw new Error(`Unable to find uniform "${name}".`);
+            return location;
+        }
+        this.aVertexPosition = getAttribute("aVertexPosition");
+        this.aVertexColor = getAttribute("aVertexColor");
+        this.aTexCoord = getAttribute("aTexCoord");
+        this.aSpriteOffset = getAttribute("aSpriteOffset");
+        this.uProjectionMatrix = getUniform("uProjectionMatrix");
+        this.uModelViewMatrix = getUniform("uModelViewMatrix");
+        this.uTexture = getUniform("uTexture");
+        this.uCameraRight = getUniform("uCameraRight");
+    }
+}
 class MapView3D extends MapView {
     gl;
     shaderProgram;
     positionBuffer;
     colorBuffer;
     textureCoordBuffer;
-    aVertexPosition;
-    aVertexColor;
-    aTexCoord;
-    uProjectionMatrix;
-    uModelViewMatrix;
-    uTexture;
+    spriteOffsetBuffer;
+    inputs;
     whiteTexture;
     textureCache = new Map();
     drawGroups = [];
@@ -544,13 +572,19 @@ class MapView3D extends MapView {
             attribute vec3 aVertexPosition;
             attribute vec3 aVertexColor;
             attribute vec2 aTexCoord;
+            attribute vec2 aSpriteOffset;
             uniform mat4 uProjectionMatrix;
             uniform mat4 uModelViewMatrix;
+            uniform vec3 uCameraRight;
             varying lowp vec3 vColor;
             varying highp vec2 vTexCoord;
 
             void main() {
-                gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(aVertexPosition, 1.0);
+                vec3 up = vec3(0.0, 1.0, 0.0);
+                vec3 worldPos = aVertexPosition
+                    + uCameraRight * aSpriteOffset.x
+                    + up * aSpriteOffset.y;
+                gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(worldPos, 1.0);
                 vColor = aVertexColor;
                 vTexCoord = aTexCoord;
             }
@@ -592,24 +626,17 @@ class MapView3D extends MapView {
             throw new Error(`Unable to initialize the shader program: ${gl.getProgramInfoLog(program)}`);
         }
         this.shaderProgram = program;
-        this.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
-        this.aVertexColor = gl.getAttribLocation(program, "aVertexColor");
-        this.aTexCoord = gl.getAttribLocation(program, "aTexCoord");
-        this.uProjectionMatrix = gl.getUniformLocation(program, "uProjectionMatrix");
-        this.uModelViewMatrix = gl.getUniformLocation(program, "uModelViewMatrix");
-        this.uTexture = gl.getUniformLocation(program, "uTexture");
-        const positionBuffer = gl.createBuffer();
-        if (positionBuffer == null)
-            throw new Error("Unable to create position buffer.");
-        this.positionBuffer = positionBuffer;
-        const colorBuffer = gl.createBuffer();
-        if (colorBuffer == null)
-            throw new Error("Unable to create color buffer.");
-        this.colorBuffer = colorBuffer;
-        const textureCoordBuffer = gl.createBuffer();
-        if (textureCoordBuffer == null)
-            throw new Error("Unable to create texcoord buffer.");
-        this.textureCoordBuffer = textureCoordBuffer;
+        this.inputs = new VertexProgramInputs(gl, program);
+        function createBuffer() {
+            const buffer = gl.createBuffer();
+            if (buffer == null)
+                throw new Error("Unable to create buffer.");
+            return buffer;
+        }
+        this.positionBuffer = createBuffer();
+        this.colorBuffer = createBuffer();
+        this.textureCoordBuffer = createBuffer();
+        this.spriteOffsetBuffer = createBuffer();
         // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         // 1x1 white texture used for untextured (flat-shaded) geometry.
         const whiteTexture = gl.createTexture();
@@ -659,6 +686,7 @@ class MapView3D extends MapView {
         const textureCoords = [];
         const rectangles = Triangulation.getRectangles(this.currentMap);
         const sprites = [];
+        const spriteOffsets = [];
         // Separate walls (untextured) from textured flats, grouped by texture name.
         const texturedGroups = new Map();
         for (const rect of rectangles) {
@@ -681,7 +709,7 @@ class MapView3D extends MapView {
         for (const [textureName, rects] of texturedGroups) {
             const groupStart = vertexCount;
             for (const rect of rects) {
-                this.emitRect(rect, positions, colors, textureCoords);
+                this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
                 vertexCount += 6;
             }
             this.drawGroups.push({
@@ -693,7 +721,7 @@ class MapView3D extends MapView {
         }
         for (const rect of sprites) {
             const groupStart = vertexCount;
-            this.emitRect(rect, positions, colors, textureCoords);
+            this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
             vertexCount += 6;
             this.drawGroups.push({
                 textureName: rect.textureName ?? null,
@@ -708,8 +736,29 @@ class MapView3D extends MapView {
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteOffsetBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(spriteOffsets), gl.STATIC_DRAW);
     }
-    emitRect(rect, positions, colors, textureCoords) {
+    emitRect(rect, positions, colors, textureCoords, spriteOffsets) {
+        const brightness = (rect.lightLevel ?? 128) / 255;
+        colors.push(brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness, brightness);
+        if (rect.type == SurfaceType.Sprite) {
+            // All 6 vertices share the sprite's anchor (bottom-center on the floor).
+            const anchorX = (rect.x.x + rect.x2.x) / 2;
+            const anchorY = rect.x.z; // floor height
+            const anchorZ = -rect.x.y; // doom y -> gl z
+            const halfWidth = (rect.x2.x - rect.x.x) / 2;
+            const height = rect.y.z - rect.x.z;
+            positions.push(anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ);
+            spriteOffsets.push(-halfWidth, 0, // v0: bottom-left
+            halfWidth, 0, // v2: bottom-right
+            -halfWidth, height, // v1: top-left
+            halfWidth, 0, // v2: bottom-right
+            halfWidth, height, // v3: top-right
+            -halfWidth, height);
+            textureCoords.push(0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0);
+            return;
+        }
         // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
         // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
         const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
@@ -717,20 +766,9 @@ class MapView3D extends MapView {
         const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
         const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
         positions.push(v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z, v2x, v2y, v2z, v1x, v1y, v1z, v3x, v3y, v3z);
-        const brightness = (rect.lightLevel ?? 128) / 255;
+        spriteOffsets.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         const isWall = rect.textureOffsetX != null;
-        if (rect.type == SurfaceType.Sprite) {
-            textureCoords.push(0, 1, // v0: bottom-left
-            0, 0, // v1: top-left
-            1, 1, // v2: bottom-right
-            1, 1, // v2: bottom-right
-            0, 0, // v1: top-left
-            1, 0);
-            for (let i = 0; i < 6; ++i) {
-                colors.push(brightness, brightness, brightness);
-            }
-        }
-        else if (isWall) {
+        if (isWall) {
             // Wall UVs: U = distance along linedef, V = height position.
             const linedefLength = Math.sqrt((rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2);
             const wallHeight = rect.y.z - rect.x.z;
@@ -750,9 +788,6 @@ class MapView3D extends MapView {
             uRight, vBottom, // v2: B floor
             uLeft, vTop, // v1: A ceiling
             uRight, vTop);
-            for (let i = 0; i < 6; ++i) {
-                colors.push(brightness, brightness, brightness);
-            }
         }
         else {
             // Flat UVs: tile at 64 world units using original DOOM x/y coords.
@@ -761,9 +796,6 @@ class MapView3D extends MapView {
             const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
             const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
             textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
-            for (let i = 0; i < 6; ++i) {
-                colors.push(brightness, brightness, brightness);
-            }
         }
     }
     tick() {
@@ -819,7 +851,7 @@ class MapView3D extends MapView {
         const projectionMatrix = mat4.create();
         const aspect = gl.canvas.width / gl.canvas.height;
         mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
-        gl.uniformMatrix4fv(this.uProjectionMatrix, false, projectionMatrix);
+        gl.uniformMatrix4fv(this.inputs.uProjectionMatrix, false, projectionMatrix);
         // View matrix: rotate then translate (camera transform).
         const viewMatrix = mat4.create();
         mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
@@ -829,21 +861,24 @@ class MapView3D extends MapView {
             -this.cameraPosition.y,
             -this.cameraPosition.z
         ]);
-        gl.uniformMatrix4fv(this.uModelViewMatrix, false, viewMatrix);
+        gl.uniformMatrix4fv(this.inputs.uModelViewMatrix, false, viewMatrix);
         // Bind position attribute.
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-        gl.vertexAttribPointer(this.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.aVertexPosition);
+        gl.vertexAttribPointer(this.inputs.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.inputs.aVertexPosition);
         // Bind color attribute.
         gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
-        gl.vertexAttribPointer(this.aVertexColor, 3, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.aVertexColor);
+        gl.vertexAttribPointer(this.inputs.aVertexColor, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.inputs.aVertexColor);
         // Bind tex coord attribute.
         gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
-        gl.vertexAttribPointer(this.aTexCoord, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.aTexCoord);
+        gl.vertexAttribPointer(this.inputs.aTexCoord, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.inputs.aTexCoord);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteOffsetBuffer);
+        gl.vertexAttribPointer(this.inputs.aSpriteOffset, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.inputs.aSpriteOffset);
         gl.activeTexture(gl.TEXTURE0);
-        gl.uniform1i(this.uTexture, 0);
+        gl.uniform1i(this.inputs.uTexture, 0);
         function getTexture(viewer, name, isSprite) {
             if (name == null || name == "-")
                 return viewer.whiteTexture;
@@ -863,6 +898,9 @@ class MapView3D extends MapView {
             viewer.textureCache.set(name, texture);
             return texture;
         }
+        const rightX = Math.cos(this.cameraYaw);
+        const rightZ = Math.sin(this.cameraYaw);
+        gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
         for (const group of this.drawGroups) {
             gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
