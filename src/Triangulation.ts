@@ -26,6 +26,7 @@ enum SurfaceType {
     Floor,
     Ceiling,
     Wall,
+    MiddleWall,
     Sprite,
 }
 
@@ -128,6 +129,27 @@ class Triangulation {
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
                         type: SurfaceType.Wall,
+                    });
+                }
+            }
+
+            // Middle wall on a two-sided linedef (gates, fences, grates).
+            const middleSidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameMiddle);
+            if (middleSidedef != null) {
+                // Midtex spans the open part of the portal: from the higher floor up to the lower ceiling.
+                const lowerZ = Math.max(sectorFront.floorHeight, sectorBack.floorHeight);
+                const upperZ = Math.min(sectorFront.ceilingHeight, sectorBack.ceilingHeight);
+                if (upperZ > lowerZ) {
+                    rectangles.push({
+                        x:  { x: a.x, y: a.y, z: lowerZ },
+                        y:  { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: middleSidedef.textureName,
+                        lightLevel: middleSidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: middleSidedef.sidedef.textureXOffset,
+                        textureOffsetY: middleSidedef.sidedef.textureYOffset,
+                        type: SurfaceType.MiddleWall,
                     });
                 }
             }

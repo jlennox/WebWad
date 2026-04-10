@@ -35,6 +35,14 @@ class VertexProgramInputs {
     }
 }
 
+interface DrawGroup {
+    textureName: string | null;
+    start: number;
+    count: number;
+    isSprite: boolean;
+    isMiddleWall: boolean;
+}
+
 class MapView3D extends MapView {
     private readonly gl: WebGLRenderingContext;
     private readonly shaderProgram: WebGLProgram;
@@ -46,7 +54,7 @@ class MapView3D extends MapView {
     private readonly whiteTexture: WebGLTexture;
     private readonly textureCache: Map<string, WebGLTexture> = new Map();
 
-    private drawGroups: { textureName: string | null; start: number; count: number; isSprite: boolean }[] = [];
+    private drawGroups: readonly DrawGroup[] = [];
     private readonly cameraPosition = { x: 0, y: 0, z: 0 };
     private cameraYaw: number = 0;
     private cameraPitch: number = 0;
@@ -194,50 +202,69 @@ class MapView3D extends MapView {
 
         // Separate walls (untextured) from textured flats, grouped by texture name.
         const texturedGroups: Map<string, ISurface[]> = new Map();
+        const middleGroups: Map<string, ISurface[]> = new Map();
 
-        for (const rect of rectangles) {
-            if (rect.textureName == null || rect.textureName == "-") continue;
+        function addToGroup(surface: ISurface, groups: Map<string, ISurface[]>): void {
+            if (surface.textureName == null) throw new Error();
 
-            if (rect.type == SurfaceType.Sprite) {
-                sprites.push(rect);
-                continue;
-            }
-
-            let group = texturedGroups.get(rect.textureName);
+            let group = groups.get(surface.textureName);
             if (group == null) {
                 group = [];
-                texturedGroups.set(rect.textureName, group);
+                groups.set(surface.textureName, group);
             }
-            group.push(rect);
+            group.push(surface);
         }
 
-        this.drawGroups = [];
+        for (const surface of rectangles) {
+            if (surface.textureName == null || surface.textureName == "-") continue;
+
+            switch (surface.type) {
+                case SurfaceType.Sprite:
+                    sprites.push(surface);
+                    continue;
+
+                case SurfaceType.MiddleWall:
+                    addToGroup(surface, middleGroups);
+                    continue;
+
+                default:
+                    addToGroup(surface, texturedGroups);
+                    continue;
+            }
+        }
+
+        const drawGroups: DrawGroup[] = [];
+        this.drawGroups = drawGroups;
         let vertexCount = 0;
 
-        // Emit textured groups (floors/ceilings).
-        for (const [textureName, rects] of texturedGroups) {
-            const groupStart = vertexCount;
-            for (const rect of rects) {
-                this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
-                vertexCount += 6;
+        // Emit textured groups (floors/ceilings/walls).
+        for (const group of [texturedGroups, middleGroups]) {
+            for (const [textureName, surfaces] of group) {
+                const groupStart = vertexCount;
+                for (const rect of surfaces) {
+                    this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
+                }
+                vertexCount += surfaces.length * 6;
+                drawGroups.push({
+                    textureName,
+                    start: groupStart,
+                    count: vertexCount - groupStart,
+                    isSprite: false,
+                    isMiddleWall: group == middleGroups,
+                });
             }
-            this.drawGroups.push({
-                textureName,
-                start: groupStart,
-                count: vertexCount - groupStart,
-                isSprite: false
-            });
         }
 
-        for (const rect of sprites) {
+        for (const surface of sprites) {
             const groupStart = vertexCount;
-            this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
+            this.emitRect(surface, positions, colors, textureCoords, spriteOffsets);
             vertexCount += 6;
-            this.drawGroups.push({
-                textureName: rect.textureName ?? null,
+            drawGroups.push({
+                textureName: surface.textureName ?? null,
                 start: groupStart,
-                count: vertexCount - groupStart,
-                isSprite: true
+                count: 6,
+                isSprite: true,
+                isMiddleWall: false,
             });
         }
 
@@ -450,7 +477,7 @@ class MapView3D extends MapView {
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this.inputs.uTexture, 0);
 
-        function getTexture(viewer: MapView3D, name: string | null, isSprite: boolean): WebGLTexture {
+        function getTexture(viewer: MapView3D, name: string | null, clampToEdge: boolean): WebGLTexture {
             if (name == null || name == "-") return viewer.whiteTexture;
 
             let texture = viewer.textureCache.get(name);
@@ -462,7 +489,7 @@ class MapView3D extends MapView {
             gl.bindTexture(gl.TEXTURE_2D, texture);
 
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
-            const wrap = isSprite ? gl.CLAMP_TO_EDGE : gl.REPEAT;
+            const wrap = clampToEdge ? gl.CLAMP_TO_EDGE : gl.REPEAT;
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -477,7 +504,13 @@ class MapView3D extends MapView {
         gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
 
         for (const group of this.drawGroups) {
-            gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite));
+            if (group.isMiddleWall) {
+                gl.disable(gl.CULL_FACE);
+            } else {
+                gl.enable(gl.CULL_FACE);
+            }
+
+            gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite || group.isMiddleWall));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
         }
     }

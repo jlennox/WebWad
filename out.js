@@ -689,45 +689,62 @@ class MapView3D extends MapView {
         const spriteOffsets = [];
         // Separate walls (untextured) from textured flats, grouped by texture name.
         const texturedGroups = new Map();
-        for (const rect of rectangles) {
-            if (rect.textureName == null || rect.textureName == "-")
-                continue;
-            if (rect.type == SurfaceType.Sprite) {
-                sprites.push(rect);
-                continue;
-            }
-            let group = texturedGroups.get(rect.textureName);
+        const middleGroups = new Map();
+        function addToGroup(surface, groups) {
+            if (surface.textureName == null)
+                throw new Error();
+            let group = groups.get(surface.textureName);
             if (group == null) {
                 group = [];
-                texturedGroups.set(rect.textureName, group);
+                groups.set(surface.textureName, group);
             }
-            group.push(rect);
+            group.push(surface);
         }
-        this.drawGroups = [];
+        for (const surface of rectangles) {
+            if (surface.textureName == null || surface.textureName == "-")
+                continue;
+            switch (surface.type) {
+                case SurfaceType.Sprite:
+                    sprites.push(surface);
+                    continue;
+                case SurfaceType.MiddleWall:
+                    addToGroup(surface, middleGroups);
+                    continue;
+                default:
+                    addToGroup(surface, texturedGroups);
+                    continue;
+            }
+        }
+        const drawGroups = [];
+        this.drawGroups = drawGroups;
         let vertexCount = 0;
-        // Emit textured groups (floors/ceilings).
-        for (const [textureName, rects] of texturedGroups) {
-            const groupStart = vertexCount;
-            for (const rect of rects) {
-                this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
-                vertexCount += 6;
+        // Emit textured groups (floors/ceilings/walls).
+        for (const group of [texturedGroups, middleGroups]) {
+            for (const [textureName, surfaces] of group) {
+                const groupStart = vertexCount;
+                for (const rect of surfaces) {
+                    this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
+                }
+                vertexCount += surfaces.length * 6;
+                drawGroups.push({
+                    textureName,
+                    start: groupStart,
+                    count: vertexCount - groupStart,
+                    isSprite: false,
+                    isMiddleWall: group == middleGroups,
+                });
             }
-            this.drawGroups.push({
-                textureName,
-                start: groupStart,
-                count: vertexCount - groupStart,
-                isSprite: false
-            });
         }
-        for (const rect of sprites) {
+        for (const surface of sprites) {
             const groupStart = vertexCount;
-            this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
+            this.emitRect(surface, positions, colors, textureCoords, spriteOffsets);
             vertexCount += 6;
-            this.drawGroups.push({
-                textureName: rect.textureName ?? null,
+            drawGroups.push({
+                textureName: surface.textureName ?? null,
                 start: groupStart,
-                count: vertexCount - groupStart,
-                isSprite: true
+                count: 6,
+                isSprite: true,
+                isMiddleWall: false,
             });
         }
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
@@ -875,7 +892,7 @@ class MapView3D extends MapView {
         gl.enableVertexAttribArray(this.inputs.aSpriteOffset);
         gl.activeTexture(gl.TEXTURE0);
         gl.uniform1i(this.inputs.uTexture, 0);
-        function getTexture(viewer, name, isSprite) {
+        function getTexture(viewer, name, clampToEdge) {
             if (name == null || name == "-")
                 return viewer.whiteTexture;
             let texture = viewer.textureCache.get(name);
@@ -886,7 +903,7 @@ class MapView3D extends MapView {
             texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, texture);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, flat.width, flat.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, flat.pixels);
-            const wrap = isSprite ? gl.CLAMP_TO_EDGE : gl.REPEAT;
+            const wrap = clampToEdge ? gl.CLAMP_TO_EDGE : gl.REPEAT;
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -898,7 +915,13 @@ class MapView3D extends MapView {
         const rightZ = Math.sin(this.cameraYaw);
         gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
         for (const group of this.drawGroups) {
-            gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite));
+            if (group.isMiddleWall) {
+                gl.disable(gl.CULL_FACE);
+            }
+            else {
+                gl.enable(gl.CULL_FACE);
+            }
+            gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite || group.isMiddleWall));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
         }
     }
@@ -1026,7 +1049,8 @@ var SurfaceType;
     SurfaceType[SurfaceType["Floor"] = 0] = "Floor";
     SurfaceType[SurfaceType["Ceiling"] = 1] = "Ceiling";
     SurfaceType[SurfaceType["Wall"] = 2] = "Wall";
-    SurfaceType[SurfaceType["Sprite"] = 3] = "Sprite";
+    SurfaceType[SurfaceType["MiddleWall"] = 3] = "MiddleWall";
+    SurfaceType[SurfaceType["Sprite"] = 4] = "Sprite";
 })(SurfaceType || (SurfaceType = {}));
 class Triangulation {
     static findSidedefTexture(right, left, getter) {
@@ -1105,6 +1129,26 @@ class Triangulation {
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
                         type: SurfaceType.Wall,
+                    });
+                }
+            }
+            // Middle wall on a two-sided linedef (gates, fences, grates).
+            const middleSidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameMiddle);
+            if (middleSidedef != null) {
+                // Midtex spans the open part of the portal: from the higher floor up to the lower ceiling.
+                const lowerZ = Math.max(sectorFront.floorHeight, sectorBack.floorHeight);
+                const upperZ = Math.min(sectorFront.ceilingHeight, sectorBack.ceilingHeight);
+                if (upperZ > lowerZ) {
+                    rectangles.push({
+                        x: { x: a.x, y: a.y, z: lowerZ },
+                        y: { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: middleSidedef.textureName,
+                        lightLevel: middleSidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: middleSidedef.sidedef.textureXOffset,
+                        textureOffsetY: middleSidedef.sidedef.textureYOffset,
+                        type: SurfaceType.MiddleWall,
                     });
                 }
             }
