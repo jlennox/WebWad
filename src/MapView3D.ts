@@ -62,20 +62,23 @@ class MapView3D extends MapView {
 
     constructor(wad: WadFile) {
         super("MapView3D", wad);
-        const gl = this.canvas.getContext("webgl");
-        if (gl == null) throw new Error("WebGL not available.");
+        const gl = this.canvas.getContext("webgl2");
+        if (gl == null) throw new Error("WebGL2 not available.");
         this.gl = gl;
 
-        const vsSource = `
-            attribute vec3 aVertexPosition;
-            attribute float aBrightness;
-            attribute vec2 aTexCoord;
-            attribute vec2 aSpriteOffset;
+        const vsSource = `#version 300 es
+
+            in vec3 aVertexPosition;
+            in float aBrightness;
+            in vec2 aTexCoord;
+            in vec2 aSpriteOffset;
+
             uniform mat4 uProjectionMatrix;
             uniform mat4 uModelViewMatrix;
             uniform vec3 uCameraRight;
-            varying lowp vec3 vColor;
-            varying highp vec2 vTexCoord;
+
+            out lowp vec3 vColor;
+            out highp vec2 vTexCoord;
 
             void main() {
                 vec3 up = vec3(0.0, 1.0, 0.0);
@@ -88,16 +91,21 @@ class MapView3D extends MapView {
             }
         `;
 
-        const fsSource = `
+        const fsSource = `#version 300 es
             precision lowp float;
-            varying lowp vec3 vColor;
-            varying highp vec2 vTexCoord;
+            precision highp sampler2D;
+
+            in lowp vec3 vColor;
+            in highp vec2 vTexCoord;
+
             uniform sampler2D uTexture;
 
+            out vec4 fragColor;
+
             void main() {
-                vec4 texColor = texture2D(uTexture, vTexCoord);
+                vec4 texColor = texture(uTexture, vTexCoord);
                 if (texColor.a < 0.5) discard;
-                gl_FragColor = vec4(vColor * texColor.rgb, texColor.a);
+                fragColor = vec4(vColor * texColor.rgb, texColor.a);
             }
         `;
 
