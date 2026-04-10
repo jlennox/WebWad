@@ -2,7 +2,7 @@
 
 class VertexProgramInputs {
     public readonly aVertexPosition: number;
-    public readonly aVertexColor: number;
+    public readonly aBrightness: number;
     public readonly aTexCoord: number;
     public readonly aSpriteOffset: number;
     public readonly uProjectionMatrix: WebGLUniformLocation;
@@ -24,7 +24,7 @@ class VertexProgramInputs {
         }
 
         this.aVertexPosition = getAttribute("aVertexPosition");
-        this.aVertexColor = getAttribute("aVertexColor");
+        this.aBrightness = getAttribute("aBrightness");
         this.aTexCoord = getAttribute("aTexCoord");
         this.aSpriteOffset = getAttribute("aSpriteOffset");
 
@@ -47,7 +47,7 @@ class MapView3D extends MapView {
     private readonly textureCache: Map<string, WebGLTexture> = new Map();
 
     private drawGroups: { textureName: string | null; start: number; count: number; isSprite: boolean }[] = [];
-    private cameraPosition = { x: 0, y: 0, z: 0 };
+    private readonly cameraPosition = { x: 0, y: 0, z: 0 };
     private cameraYaw: number = 0;
     private cameraPitch: number = 0;
     private readonly keysDown: Set<string> = new Set<string>();
@@ -55,12 +55,12 @@ class MapView3D extends MapView {
     constructor(wad: WadFile) {
         super("MapView3D", wad);
         const gl = this.canvas.getContext("webgl");
-        if (gl === null) throw new Error("WebGL not available.");
+        if (gl == null) throw new Error("WebGL not available.");
         this.gl = gl;
 
         const vsSource = `
             attribute vec3 aVertexPosition;
-            attribute vec3 aVertexColor;
+            attribute float aBrightness;
             attribute vec2 aTexCoord;
             attribute vec2 aSpriteOffset;
             uniform mat4 uProjectionMatrix;
@@ -75,7 +75,7 @@ class MapView3D extends MapView {
                     + uCameraRight * aSpriteOffset.x
                     + up * aSpriteOffset.y;
                 gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(worldPos, 1.0);
-                vColor = aVertexColor;
+                vColor = vec3(aBrightness / 255.0);
                 vTexCoord = aTexCoord;
             }
         `;
@@ -261,15 +261,16 @@ class MapView3D extends MapView {
         textureCoords: number[],
         spriteOffsets: number[],
     ): void {
-        const brightness = (rect.lightLevel ?? 128) / 255;
+        // Each rect has 6 vertices (2 triangles), which means a lot of things happen in multiples of 6.
 
+        const brightness = rect.lightLevel ?? 128;
         colors.push(
-            brightness, brightness, brightness,
-            brightness, brightness, brightness,
-            brightness, brightness, brightness,
-            brightness, brightness, brightness,
-            brightness, brightness, brightness,
-            brightness, brightness, brightness,
+            brightness,
+            brightness,
+            brightness,
+            brightness,
+            brightness,
+            brightness,
         );
 
         if (rect.type == SurfaceType.Sprite) {
@@ -415,13 +416,11 @@ class MapView3D extends MapView {
 
         gl.useProgram(this.shaderProgram);
 
-        // Projection matrix.
         const projectionMatrix = mat4.create();
         const aspect = gl.canvas.width / gl.canvas.height;
         mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
         gl.uniformMatrix4fv(this.inputs.uProjectionMatrix, false, projectionMatrix);
 
-        // View matrix: rotate then translate (camera transform).
         const viewMatrix = mat4.create();
         mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
         mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
@@ -432,17 +431,14 @@ class MapView3D extends MapView {
         ]);
         gl.uniformMatrix4fv(this.inputs.uModelViewMatrix, false, viewMatrix);
 
-        // Bind position attribute.
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
         gl.vertexAttribPointer(this.inputs.aVertexPosition, 3, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(this.inputs.aVertexPosition);
 
-        // Bind color attribute.
         gl.bindBuffer(gl.ARRAY_BUFFER, this.colorBuffer);
-        gl.vertexAttribPointer(this.inputs.aVertexColor, 3, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(this.inputs.aVertexColor);
+        gl.vertexAttribPointer(this.inputs.aBrightness, 1, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(this.inputs.aBrightness);
 
-        // Bind tex coord attribute.
         gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
         gl.vertexAttribPointer(this.inputs.aTexCoord, 2, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(this.inputs.aTexCoord);
