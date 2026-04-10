@@ -146,6 +146,7 @@ class WadFile {
     public readonly palette: PaletteEntry;
     public readonly patchNameDirectory: Map<number, DirectoryEntry>;
     public readonly mapTextures: Map<string, MapTextureEntry>;
+    private readonly imageDataCache = new Map<string, NamedImageData[]>();
 
     private readonly reader: BinaryFileReader;
     private readonly decodeImagesCache = new Map<string, DecodedImage>();
@@ -167,14 +168,14 @@ class WadFile {
         this.mapTextures = MapTextureEntry.readAll(this, this.reader);
     }
 
+    public tryGetDirectoryEntry(name: LumpName | string): DirectoryEntry | undefined {
+        return this.directoryMap.get(name);
+    }
+
     public getDirectoryEntry(name: LumpName | string): DirectoryEntry {
         const lump = this.directoryMap.get(name);
         if (lump == null) throw new Error(`Lump "${name}" not found.`);
         return lump;
-    }
-
-    public tryGetDirectoryEntry(name: LumpName | string): DirectoryEntry | undefined {
-        return this.directoryMap.get(name);
     }
 
     public tryGetImage(name: string): DecodedImage | undefined {
@@ -223,6 +224,32 @@ class WadFile {
         this.decodeImagesCache.set(name, def);
         return def;
     }
+
+    public getImageData(name: string | undefined): NamedImageData[] {
+        if (name == null) return [];
+
+        const cached = this.imageDataCache.get(name);
+        if (cached != null) return cached;
+
+        const images: NamedImageData[] = [];
+        for (const patch of this.patches) {
+            const patchName = patch[0];
+            if (!patchName.startsWith(name)) continue;
+
+            const image = this.getImage(patchName);
+            const uint8 = new Uint8ClampedArray(image.pixels);
+            const imageData = new ImageData(uint8, image.width, image.height) as NamedImageData;
+            imageData.name = patchName;
+            images.push(imageData);
+        }
+
+        this.imageDataCache.set(name, images);
+        return images;
+    }
+}
+
+interface NamedImageData extends ImageData {
+    name: string;
 }
 
 class BoundingBox {
@@ -342,6 +369,33 @@ class Vertex {
     }
 }
 
+class SkillLevel {
+    private constructor() { }
+
+    public static getDescrption(level: number): string {
+        switch (level) {
+            case 1: return "I'm too young to die.";
+            case 2: return "Hey, not too rough";
+            case 3: return "Hurt me plenty.";
+            case 4: return "Ultra-Violence";
+            case 5: return "Nightmare!";
+        }
+
+        throw new Error(`Unknown skill level ${level}.`);
+    }
+}
+
+enum SpawnFlags {
+    SkillLevels1And2 = 0x0001,
+    SkillLevel3 = 0x0002,
+    SkillLevel4and5 = 0x0004,
+    Deaf = 0x0008,
+    MultiplayerOnly = 0x0010,
+    NotInDeathmatch = 0x0020, // Boom
+    NotInCooperative = 0x0040, // Boom
+    FriendlyMonster = 0x0080, // MBF
+}
+
 // https://doomwiki.org/wiki/Thing
 class ThingEntry {
     public readonly x: i16;
@@ -366,6 +420,10 @@ class ThingEntry {
 
     public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly ThingEntry[] {
         return entry.readAll(reader, (reader) => new ThingEntry(reader));
+    }
+
+    public hasFlag(spawnFlag: SpawnFlags): boolean {
+        return (this.spawnFlags & spawnFlag) == spawnFlag;
     }
 }
 

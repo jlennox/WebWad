@@ -47,7 +47,8 @@ class HitTester<TInfo> {
         const points = this.points;
         if (points == null) return null;
 
-        const translated = new DOMPoint(x, y).matrixTransform(matrix.inverse());
+        // Lots of allocations: .inverse(), new DOMPointReadOnly, and matrixTransform.
+        const translated = new DOMPointReadOnly(x, y).matrixTransform(matrix.inverse());
 
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {

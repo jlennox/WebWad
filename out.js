@@ -29,7 +29,8 @@ class HitTester {
         const points = this.points;
         if (points == null)
             return null;
-        const translated = new DOMPoint(x, y).matrixTransform(matrix.inverse());
+        // Lots of allocations: .inverse(), new DOMPointReadOnly, and matrixTransform.
+        const translated = new DOMPointReadOnly(x, y).matrixTransform(matrix.inverse());
         let pointIndex = 0;
         for (let i = 0; i < this.count; ++i) {
             const pointX = points[pointIndex + 0 /* PointIndex.x */];
@@ -98,6 +99,7 @@ class UserFileInputUI {
         wad.then((wad) => {
             for (const canvas of document.querySelectorAll("canvas"))
                 canvas.remove();
+            const thingsDialog = new ThingsViewerUI(wad);
             let mapViewIndex = 0;
             const mapViews = ctor(wad);
             let previousMapView = mapViews[0];
@@ -115,6 +117,10 @@ class UserFileInputUI {
             document.addEventListener("keydown", (e) => {
                 if (e.key === "Tab") {
                     e.preventDefault();
+                    if (e.shiftKey) {
+                        thingsDialog.show();
+                        return;
+                    }
                     mapViewIndex = (mapViewIndex + 1) % mapViews.length;
                     updateShownMapView();
                 }
@@ -154,7 +160,7 @@ class UserFileInputUI {
         context.font = "20px serif";
         drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nTab: Switch 2D/3D\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+        drawBottomLeft("Controls:\nTab: Switch 2D/3D\nShift+Tab: Things viewer\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
     }
 }
 /// <reference path="UserFileInput.ts" />
@@ -295,7 +301,6 @@ const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView
 class MapView2D extends MapView {
     viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     thingHitTester = new HitTester();
-    imageCache = new Map();
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
     constructor(wad) {
@@ -361,25 +366,6 @@ class MapView2D extends MapView {
         console.log(stl);
     }
     onKeyUp(_event) { }
-    getImageData(name) {
-        if (name == null)
-            return [];
-        const cached = this.imageCache.get(name);
-        if (cached != null)
-            return cached;
-        const images = [];
-        for (const patch of this.wad.patches) {
-            const patchName = patch[0];
-            if (!patchName.startsWith(name))
-                continue;
-            const image = this.wad.getImage(patchName);
-            const uint8 = new Uint8ClampedArray(image.pixels);
-            const imageData = new ImageData(uint8, image.width, image.height);
-            images.push(imageData);
-        }
-        this.imageCache.set(name, images);
-        return images;
-    }
     draw() {
         const context = this.canvas.getContext("2d");
         if (context == null)
@@ -481,7 +467,7 @@ class MapView2D extends MapView {
             context.fillStyle = "Black";
             context.textBaseline = "top";
             context.fillText(thing.description?.description ?? "", boxX + 5, boxY + 5, 300);
-            const thingImage = this.getImageData(thing.description.sprite);
+            const thingImage = this.wad.getImageData(thing.description?.sprite);
             if (thingImage.length > 0) {
                 context.putImageData(thingImage[0], boxX + 5, boxY + 25);
             }
@@ -907,6 +893,99 @@ class MapView3D extends MapView {
     onMouseUp(_event) { }
     onDoubleClick(_event) { }
     onKeyUp(event) { }
+}
+class ThingsViewerElements {
+    thingSelect;
+    closeButton;
+    spritesSelect;
+    spriteDisplay;
+    description;
+    constructor(dialog) {
+        function find(query) {
+            const element = dialog.querySelector(query);
+            if (element == null)
+                throw new Error(`Unable to find "${query}".`);
+            return element;
+        }
+        this.thingSelect = find("select[name=thing]");
+        this.closeButton = find("button[name=close]");
+        this.spritesSelect = find("select[name=sprites]");
+        this.spriteDisplay = find("canvas[name=spriteDisplay]");
+        this.description = find("div.description");
+    }
+}
+class ThingsViewerUI {
+    wad;
+    dialog;
+    elements;
+    constructor(wad) {
+        this.wad = wad;
+        const things = Object.entries(Things.descriptions)
+            .map(([id, description]) => ({
+            name: description.description,
+            index: id
+        }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        this.dialog = document.createElement("dialog");
+        this.dialog.classList.add("thingsViewerDialog");
+        this.dialog.innerHTML = `
+                <label>Thing:</label>
+                <select name="thing">
+                    ${things.map((thing) => `<option value="${thing.index}">${Html.escape(thing.name)}</option>`).join("")}
+                </select>
+                <label>Sprites:</label>
+                <select name="sprites"></select>
+                <button name="close">Close</button>
+                <div class="description"></div>
+                <canvas name="spriteDisplay"></select>
+            </form>
+        `;
+        this.elements = new ThingsViewerElements(this.dialog);
+        this.elements.closeButton.addEventListener("click", _ => this.dialog.close());
+        this.elements.thingSelect.addEventListener("change", (e) => this.onThingChanged(e));
+        this.elements.spritesSelect.addEventListener("change", (e) => this.onSpriteChanged(e));
+        this.dialog.addEventListener("keydown", (e) => { if (e.key === "Escape")
+            this.dialog.close(); });
+        this.elements.thingSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        document.body.appendChild(this.dialog);
+    }
+    onThingChanged(event) {
+        const select = event.target;
+        const thingIndex = parseInt(select.value);
+        const thingDescription = Things.descriptions[thingIndex];
+        console.log("thingDescription", thingDescription);
+        this.elements.description.textContent = JSON.stringify(thingDescription, undefined, 2);
+        this.elements.spritesSelect.innerHTML = "";
+        const images = this.wad.getImageData(thingDescription.sprite);
+        for (const image of images) {
+            const option = new Option(image.name, image.name);
+            this.elements.spritesSelect.appendChild(option);
+        }
+        this.elements.spritesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    onSpriteChanged(event) {
+        const select = event.target;
+        const spriteName = select.value;
+        const context = this.elements.spriteDisplay.getContext("2d");
+        const image = this.wad.getImageData(spriteName)[0];
+        if (image == null) {
+            console.error(`Unable to find image data for "${spriteName}".`);
+            return;
+        }
+        this.elements.spriteDisplay.width = image.width;
+        this.elements.spriteDisplay.height = image.height;
+        context.putImageData(image, 0, 0);
+    }
+    show() {
+        this.dialog.show();
+    }
+}
+class Html {
+    static escapeElement = document.createElement("div");
+    static escape(text) {
+        Html.escapeElement.textContent = text;
+        return Html.escapeElement.innerHTML;
+    }
 }
 var SurfaceType;
 (function (SurfaceType) {
@@ -2517,6 +2596,7 @@ class WadFile {
     palette;
     patchNameDirectory;
     mapTextures;
+    imageDataCache = new Map();
     reader;
     decodeImagesCache = new Map();
     directoryMap;
@@ -2533,14 +2613,14 @@ class WadFile {
         this.patchNameDirectory = PatchNamesEntry.read(this, this.reader);
         this.mapTextures = MapTextureEntry.readAll(this, this.reader);
     }
+    tryGetDirectoryEntry(name) {
+        return this.directoryMap.get(name);
+    }
     getDirectoryEntry(name) {
         const lump = this.directoryMap.get(name);
         if (lump == null)
             throw new Error(`Lump "${name}" not found.`);
         return lump;
-    }
-    tryGetDirectoryEntry(name) {
-        return this.directoryMap.get(name);
     }
     tryGetImage(name) {
         const fromCache = this.decodeImagesCache.get(name);
@@ -2582,6 +2662,26 @@ class WadFile {
         const def = defaultImage ?? new DecodedImage(0, 0, new Uint8Array());
         this.decodeImagesCache.set(name, def);
         return def;
+    }
+    getImageData(name) {
+        if (name == null)
+            return [];
+        const cached = this.imageDataCache.get(name);
+        if (cached != null)
+            return cached;
+        const images = [];
+        for (const patch of this.patches) {
+            const patchName = patch[0];
+            if (!patchName.startsWith(name))
+                continue;
+            const image = this.getImage(patchName);
+            const uint8 = new Uint8ClampedArray(image.pixels);
+            const imageData = new ImageData(uint8, image.width, image.height);
+            imageData.name = patchName;
+            images.push(imageData);
+        }
+        this.imageDataCache.set(name, images);
+        return images;
     }
 }
 class BoundingBox {
@@ -2680,6 +2780,30 @@ class Vertex {
         return a.x == b.x && a.y == b.y;
     }
 }
+class SkillLevel {
+    constructor() { }
+    static getDescrption(level) {
+        switch (level) {
+            case 1: return "I'm too young to die.";
+            case 2: return "Hey, not too rough";
+            case 3: return "Hurt me plenty.";
+            case 4: return "Ultra-Violence";
+            case 5: return "Nightmare!";
+        }
+        throw new Error(`Unknown skill level ${level}.`);
+    }
+}
+var SpawnFlags;
+(function (SpawnFlags) {
+    SpawnFlags[SpawnFlags["SkillLevels1And2"] = 1] = "SkillLevels1And2";
+    SpawnFlags[SpawnFlags["SkillLevel3"] = 2] = "SkillLevel3";
+    SpawnFlags[SpawnFlags["SkillLevel4and5"] = 4] = "SkillLevel4and5";
+    SpawnFlags[SpawnFlags["Deaf"] = 8] = "Deaf";
+    SpawnFlags[SpawnFlags["MultiplayerOnly"] = 16] = "MultiplayerOnly";
+    SpawnFlags[SpawnFlags["NotInDeathmatch"] = 32] = "NotInDeathmatch";
+    SpawnFlags[SpawnFlags["NotInCooperative"] = 64] = "NotInCooperative";
+    SpawnFlags[SpawnFlags["FriendlyMonster"] = 128] = "FriendlyMonster";
+})(SpawnFlags || (SpawnFlags = {}));
 // https://doomwiki.org/wiki/Thing
 class ThingEntry {
     x;
@@ -2701,6 +2825,9 @@ class ThingEntry {
     }
     static readAll(entry, reader) {
         return entry.readAll(reader, (reader) => new ThingEntry(reader));
+    }
+    hasFlag(spawnFlag) {
+        return (this.spawnFlags & spawnFlag) == spawnFlag;
     }
 }
 class LinedefEntry {

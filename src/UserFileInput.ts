@@ -54,6 +54,8 @@ class UserFileInputUI {
         wad.then((wad) => {
             for (const canvas of document.querySelectorAll("canvas")) canvas.remove();
 
+            const thingsDialog = new ThingsViewerUI(wad);
+
             let mapViewIndex = 0;
             const mapViews = ctor(wad);
 
@@ -77,6 +79,11 @@ class UserFileInputUI {
             document.addEventListener("keydown", (e) => {
                 if (e.key === "Tab") {
                     e.preventDefault();
+
+                    if (e.shiftKey) {
+                        thingsDialog.show();
+                        return;
+                    }
 
                     mapViewIndex = (mapViewIndex + 1) % mapViews.length;
                     updateShownMapView();
@@ -123,6 +130,6 @@ class UserFileInputUI {
         context.font = "20px serif";
         drawCentered("Or double click to load the shareware WAD", this.canvas.width, this.canvas.height + 40);
         context.font = "20px serif";
-        drawBottomLeft("Controls:\nTab: Switch 2D/3D\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
+        drawBottomLeft("Controls:\nTab: Switch 2D/3D\nShift+Tab: Things viewer\nZoom: Mouse wheel (shift for faster zoom)\nPan: Drag with mouse\nChange level: + and -", this.canvas.width, this.canvas.height);
     }
 }
