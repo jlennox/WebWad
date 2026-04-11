@@ -637,6 +637,8 @@ interface IMapDirectoryEntry {
     readonly blockmap: DirectoryEntry;
 }
 
+type LinedefsPerSector = Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}>;
+
 class MapEntry {
     public readonly wadFile: WadFile;
     public readonly name: string;
@@ -650,7 +652,7 @@ class MapEntry {
     public readonly subSectors: readonly SubSectorEntry[];
     public readonly sectors: readonly SectorEntry[];
 
-    public readonly linedefsPerSector: Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}>;
+    public readonly linedefsPerSector: LinedefsPerSector;
 
     private readonly reader: BinaryFileReader
 
@@ -667,14 +669,12 @@ class MapEntry {
         this.segments = SegmentEntry.readAll(this, entries.segs, reader);
         this.subSectors = SubSectorEntry.readAll(this, entries.ssectors, reader);
         this.sectors = SectorEntry.readAll(this, entries.sectors, reader);
-
-        // Must come after sectors are loaded.
-        this.linedefsPerSector = this.getLinedefsPerSector();
+        this.linedefsPerSector = MapEntry.getLinedefsPerSector(this.linedefs);
     }
 
-    private getLinedefsPerSector(): Readonly<{[sectorIndex: number]: readonly LinedefEntry[]}> {
+    private static getLinedefsPerSector(linedefs: readonly LinedefEntry[]): LinedefsPerSector {
         const linedefsPerSector: {[sectorIndex: number]: LinedefEntry[]} = {};
-        for (const linedef of this.linedefs) {
+        for (const linedef of linedefs) {
             for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null) continue;
 
@@ -755,7 +755,7 @@ class MapEntry {
 
         // This should really be parsing out the numbers, but they should happen to order correctly regardless due
         // to leading 0 padding.
-        return maps.sort((a, b) => a.name < b.name ? -1 : 1);
+        return maps.sort((a, b) => a.name.localeCompare(b.name));
     }
 }
 
@@ -1066,6 +1066,8 @@ class MapTextureEntry {
                     if (destX < 0 || destX >= this.width) continue;
 
                     const pixel = sourceU32[sourceIndex];
+                    if ((pixel & 0xFF000000) == 0) continue; // transparent
+
                     pixels[destIndex] = pixel;
                 }
             }

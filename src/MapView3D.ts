@@ -9,6 +9,7 @@ class VertexProgramInputs {
     public readonly uModelViewMatrix: WebGLUniformLocation;
     public readonly uTexture: WebGLUniformLocation;
     public readonly uCameraRight: WebGLUniformLocation;
+    public readonly uDiscard: WebGLUniformLocation;
 
     constructor(gl: WebGLRenderingContext, program: WebGLProgram) {
         function getAttribute(name: string): number {
@@ -28,10 +29,11 @@ class VertexProgramInputs {
         this.aTexCoord = getAttribute("aTexCoord");
         this.aSpriteOffset = getAttribute("aSpriteOffset");
 
-        this.uProjectionMatrix = getUniform("uProjectionMatrix")!;
-        this.uModelViewMatrix = getUniform("uModelViewMatrix")!;
-        this.uTexture = getUniform("uTexture")!;
-        this.uCameraRight = getUniform("uCameraRight")!;
+        this.uProjectionMatrix = getUniform("uProjectionMatrix");
+        this.uModelViewMatrix = getUniform("uModelViewMatrix");
+        this.uTexture = getUniform("uTexture");
+        this.uCameraRight = getUniform("uCameraRight");
+        this.uDiscard = getUniform("uDiscard");
     }
 }
 
@@ -62,7 +64,7 @@ class MapView3D extends MapView {
 
     constructor(wad: WadFile) {
         super("MapView3D", wad);
-        const gl = this.canvas.getContext("webgl2");
+        const gl = this.canvas.getContext("webgl2", { alpha: false });
         if (gl == null) throw new Error("WebGL2 not available.");
         this.gl = gl;
 
@@ -99,12 +101,14 @@ class MapView3D extends MapView {
             in highp vec2 vTexCoord;
 
             uniform sampler2D uTexture;
+            uniform bool uDiscard;
 
             out vec4 fragColor;
 
             void main() {
                 vec4 texColor = texture(uTexture, vTexCoord);
-                if (texColor.a < 0.5) discard;
+                // Apparently we can get a benefit by having 2 programs, one without discord, allowing for early z-culling.
+                if (uDiscard && texColor.a < 0.5) discard;
                 fragColor = vec4(vColor * texColor.rgb, texColor.a);
             }
         `;
@@ -512,10 +516,12 @@ class MapView3D extends MapView {
         gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
 
         for (const group of this.drawGroups) {
-            if (group.isMiddleWall) {
+            if (group.isMiddleWall || group.isSprite) {
                 gl.disable(gl.CULL_FACE);
+                gl.uniform1i(this.inputs.uDiscard, 1);
             } else {
                 gl.enable(gl.CULL_FACE);
+                gl.uniform1i(this.inputs.uDiscard, 0);
             }
 
             gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite || group.isMiddleWall));
@@ -549,5 +555,5 @@ class MapView3D extends MapView {
     protected override onMouseDown(_event: MouseEvent): void {}
     protected override onMouseUp(_event: MouseEvent): void {}
     protected override onDoubleClick(_event: MouseEvent): void {}
-    protected override onKeyUp(event: KeyboardEvent): void {}
+    protected override onKeyUp(_event: KeyboardEvent): void {}
 }

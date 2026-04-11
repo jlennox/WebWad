@@ -524,6 +524,7 @@ class VertexProgramInputs {
     uModelViewMatrix;
     uTexture;
     uCameraRight;
+    uDiscard;
     constructor(gl, program) {
         function getAttribute(name) {
             const location = gl.getAttribLocation(program, name);
@@ -545,6 +546,7 @@ class VertexProgramInputs {
         this.uModelViewMatrix = getUniform("uModelViewMatrix");
         this.uTexture = getUniform("uTexture");
         this.uCameraRight = getUniform("uCameraRight");
+        this.uDiscard = getUniform("uDiscard");
     }
 }
 class MapView3D extends MapView {
@@ -564,7 +566,7 @@ class MapView3D extends MapView {
     keysDown = new Set();
     constructor(wad) {
         super("MapView3D", wad);
-        const gl = this.canvas.getContext("webgl2");
+        const gl = this.canvas.getContext("webgl2", { alpha: false });
         if (gl == null)
             throw new Error("WebGL2 not available.");
         this.gl = gl;
@@ -600,12 +602,14 @@ class MapView3D extends MapView {
             in highp vec2 vTexCoord;
 
             uniform sampler2D uTexture;
+            uniform bool uDiscard;
 
             out vec4 fragColor;
 
             void main() {
                 vec4 texColor = texture(uTexture, vTexCoord);
-                if (texColor.a < 0.5) discard;
+                // Apparently we can get a benefit by having 2 programs, one without discord, allowing for early z-culling.
+                if (uDiscard && texColor.a < 0.5) discard;
                 fragColor = vec4(vColor * texColor.rgb, texColor.a);
             }
         `;
@@ -923,11 +927,13 @@ class MapView3D extends MapView {
         const rightZ = Math.sin(this.cameraYaw);
         gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
         for (const group of this.drawGroups) {
-            if (group.isMiddleWall) {
+            if (group.isMiddleWall || group.isSprite) {
                 gl.disable(gl.CULL_FACE);
+                gl.uniform1i(this.inputs.uDiscard, 1);
             }
             else {
                 gl.enable(gl.CULL_FACE);
+                gl.uniform1i(this.inputs.uDiscard, 0);
             }
             gl.bindTexture(gl.TEXTURE_2D, getTexture(this, group.textureName, group.isSprite || group.isMiddleWall));
             gl.drawArrays(gl.TRIANGLES, group.start, group.count);
@@ -957,7 +963,7 @@ class MapView3D extends MapView {
     onMouseDown(_event) { }
     onMouseUp(_event) { }
     onDoubleClick(_event) { }
-    onKeyUp(event) { }
+    onKeyUp(_event) { }
 }
 class ThingsViewerElements {
     thingSelect;
@@ -3103,12 +3109,11 @@ class MapEntry {
         this.segments = SegmentEntry.readAll(this, entries.segs, reader);
         this.subSectors = SubSectorEntry.readAll(this, entries.ssectors, reader);
         this.sectors = SectorEntry.readAll(this, entries.sectors, reader);
-        // Must come after sectors are loaded.
-        this.linedefsPerSector = this.getLinedefsPerSector();
+        this.linedefsPerSector = MapEntry.getLinedefsPerSector(this.linedefs);
     }
-    getLinedefsPerSector() {
+    static getLinedefsPerSector(linedefs) {
         const linedefsPerSector = {};
-        for (const linedef of this.linedefs) {
+        for (const linedef of linedefs) {
             for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null)
                     continue;
@@ -3177,7 +3182,7 @@ class MapEntry {
         }
         // This should really be parsing out the numbers, but they should happen to order correctly regardless due
         // to leading 0 padding.
-        return maps.sort((a, b) => a.name < b.name ? -1 : 1);
+        return maps.sort((a, b) => a.name.localeCompare(b.name));
     }
 }
 class DecodedImage {
@@ -3451,6 +3456,8 @@ class MapTextureEntry {
                     if (destX < 0 || destX >= this.width)
                         continue;
                     const pixel = sourceU32[sourceIndex];
+                    if ((pixel & 0xFF000000) == 0)
+                        continue; // transparent
                     pixels[destIndex] = pixel;
                 }
             }
