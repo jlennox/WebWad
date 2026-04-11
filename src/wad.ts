@@ -352,20 +352,32 @@ class DirectoryEntry {
 }
 
 class Vertex {
-    public readonly x: i16;
-    public readonly y: i16;
+    constructor(
+        public readonly x: i16,
+        public readonly y: i16,
+    ) {}
 
-    constructor(reader: BinaryFileReader) {
-        this.x = reader.readI16();
-        this.y = reader.readI16();
+    private static read(reader: BinaryFileReader) {
+        return new Vertex(reader.readI16(), reader.readI16());
     }
 
     public static readAll(entry: DirectoryEntry, reader: BinaryFileReader): readonly Vertex[] {
-        return entry.readAll(reader, (reader) => new Vertex(reader));
+        return entry.readAll(reader, (reader) => Vertex.read(reader));
     }
 
     public static areEqual(a: Vertex, b: Vertex): boolean {
         return a.x == b.x && a.y == b.y;
+    }
+
+    public pack(): number {
+        // Mask a to avoid sign bleed.
+        return (this.x & 0xFFFF) | (this.y << 16);
+    }
+
+    public static unpack(packed: number): Vertex {
+        const x = (packed << 16) >> 16;
+        const y = packed >> 16;
+        return new Vertex(x, y);
     }
 }
 

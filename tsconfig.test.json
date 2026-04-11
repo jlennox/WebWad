@@ -1,0 +1,11 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "outFile": "src/test/out-test.js",
+    },
+    "include": [
+        "src/**/*",
+        "src/test/**/*"
+    ],
+    "exclude": []
+}

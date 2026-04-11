@@ -2891,15 +2891,27 @@ class DirectoryEntry {
 class Vertex {
     x;
     y;
-    constructor(reader) {
-        this.x = reader.readI16();
-        this.y = reader.readI16();
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+    }
+    static read(reader) {
+        return new Vertex(reader.readI16(), reader.readI16());
     }
     static readAll(entry, reader) {
-        return entry.readAll(reader, (reader) => new Vertex(reader));
+        return entry.readAll(reader, (reader) => Vertex.read(reader));
     }
     static areEqual(a, b) {
         return a.x == b.x && a.y == b.y;
+    }
+    pack() {
+        // Mask a to avoid sign bleed.
+        return (this.x & 0xFFFF) | (this.y << 16);
+    }
+    static unpack(packed) {
+        const x = (packed << 16) >> 16;
+        const y = packed >> 16;
+        return new Vertex(x, y);
     }
 }
 class SkillLevel {

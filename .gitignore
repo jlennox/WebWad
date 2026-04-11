@@ -1,2 +1,3 @@
 *.wad
-test.html
+out-test.js
+out-test.js.map
