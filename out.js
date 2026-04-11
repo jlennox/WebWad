@@ -770,8 +770,7 @@ class MapView3D extends MapView {
     }
     emitRect(rect, positions, colors, textureCoords, spriteOffsets) {
         // Each rect has 6 vertices (2 triangles), which means a lot of things happen in multiples of 6.
-        const brightness = rect.lightLevel ?? 128;
-        colors.push(brightness, brightness, brightness, brightness, brightness, brightness);
+        colors.push(rect.lightLevel, rect.lightLevel, rect.lightLevel, rect.lightLevel, rect.lightLevel, rect.lightLevel);
         if (rect.type == SurfaceType.Sprite) {
             // All 6 vertices share the sprite's anchor (bottom-center on the floor).
             const anchorX = (rect.x.x + rect.x2.x) / 2;
@@ -809,8 +808,16 @@ class MapView3D extends MapView {
             const offsetV = rect.textureOffsetY / textureHeight;
             const uLeft = offsetU + linedefLength / textureWidth;
             const uRight = offsetU;
-            const vTop = offsetV;
-            const vBottom = offsetV + wallHeight / textureHeight;
+            let vTop;
+            let vBottom;
+            if (rect.bottomPegged) {
+                vBottom = 1 + offsetV;
+                vTop = vBottom - wallHeight / textureHeight;
+            }
+            else {
+                vTop = offsetV;
+                vBottom = vTop + wallHeight / textureHeight;
+            }
             // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
             textureCoords.push(uLeft, vBottom, // v0: A floor
             uLeft, vTop, // v1: A ceiling
@@ -1104,6 +1111,7 @@ class Triangulation {
                     textureOffsetX: sidedef.textureXOffset,
                     textureOffsetY: sidedef.textureYOffset,
                     type: SurfaceType.Wall,
+                    bottomPegged: linedef.hasFlag(16 /* LinedefFlags.DONTPEGBOTTOM */),
                 });
                 continue;
             }
@@ -1143,6 +1151,7 @@ class Triangulation {
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
                         type: SurfaceType.Wall,
+                        bottomPegged: !linedef.hasFlag(8 /* LinedefFlags.DONTPEGTOP */),
                     });
                 }
             }
@@ -1163,6 +1172,7 @@ class Triangulation {
                         textureOffsetX: middleSidedef.sidedef.textureXOffset,
                         textureOffsetY: middleSidedef.sidedef.textureYOffset,
                         type: SurfaceType.MiddleWall,
+                        bottomPegged: linedef.hasFlag(16 /* LinedefFlags.DONTPEGBOTTOM */),
                     });
                 }
             }

@@ -31,11 +31,13 @@ enum SurfaceType {
 }
 
 interface ISurface extends IRectangle {
-    readonly textureName?: string;
-    readonly lightLevel?: number;
+    readonly textureName: string;
+    readonly lightLevel: number;
     readonly textureOffsetX?: number;
     readonly textureOffsetY?: number;
     readonly type: SurfaceType;
+    // Is texture anchored to the floor, not to the ceiling?
+    readonly bottomPegged?: boolean;
 }
 
 interface SidedefTexture {
@@ -86,6 +88,7 @@ class Triangulation {
                     textureOffsetX: sidedef.textureXOffset,
                     textureOffsetY: sidedef.textureYOffset,
                     type: SurfaceType.Wall,
+                    bottomPegged: linedef.hasFlag(LinedefFlags.DONTPEGBOTTOM),
                 });
                 continue;
             }
@@ -129,6 +132,7 @@ class Triangulation {
                         textureOffsetX: sidedef.sidedef.textureXOffset,
                         textureOffsetY: sidedef.sidedef.textureYOffset,
                         type: SurfaceType.Wall,
+                        bottomPegged: !linedef.hasFlag(LinedefFlags.DONTPEGTOP),
                     });
                 }
             }
@@ -150,6 +154,7 @@ class Triangulation {
                         textureOffsetX: middleSidedef.sidedef.textureXOffset,
                         textureOffsetY: middleSidedef.sidedef.textureYOffset,
                         type: SurfaceType.MiddleWall,
+                        bottomPegged: linedef.hasFlag(LinedefFlags.DONTPEGBOTTOM),
                     });
                 }
             }

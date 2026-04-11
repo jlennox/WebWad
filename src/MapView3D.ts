@@ -302,14 +302,13 @@ class MapView3D extends MapView {
     ): void {
         // Each rect has 6 vertices (2 triangles), which means a lot of things happen in multiples of 6.
 
-        const brightness = rect.lightLevel ?? 128;
         colors.push(
-            brightness,
-            brightness,
-            brightness,
-            brightness,
-            brightness,
-            brightness,
+            rect.lightLevel,
+            rect.lightLevel,
+            rect.lightLevel,
+            rect.lightLevel,
+            rect.lightLevel,
+            rect.lightLevel,
         );
 
         if (rect.type == SurfaceType.Sprite) {
@@ -375,8 +374,15 @@ class MapView3D extends MapView {
 
             const uLeft = offsetU + linedefLength / textureWidth;
             const uRight = offsetU;
-            const vTop = offsetV;
-            const vBottom = offsetV + wallHeight / textureHeight;
+            let vTop: number;
+            let vBottom: number;
+            if (rect.bottomPegged) {
+                vBottom = 1 + offsetV;
+                vTop = vBottom - wallHeight / textureHeight;
+            } else {
+                vTop = offsetV;
+                vBottom = vTop + wallHeight / textureHeight;
+            }
 
             // x=A floor, y=A ceiling, x2=B floor, y2=B ceiling
             textureCoords.push(
