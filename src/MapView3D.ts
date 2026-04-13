@@ -211,9 +211,12 @@ class MapView3D extends MapView {
         const positions: number[] = [];
         const colors: number[] = [];
         const textureCoords: number[] = [];
-        const rectangles = Triangulation.getRectangles(this.currentMap);
         const sprites: ISurface[] = [];
         const spriteOffsets: number[] = [];
+
+        console.time("Rectangles")
+        const rectangles = Triangulation.getRectangles(this.currentMap);
+        console.timeEnd("Rectangles");
 
         // Separate walls (untextured) from textured flats, grouped by texture name.
         const texturedGroups: Map<string, ISurface[]> = new Map();

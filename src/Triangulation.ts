@@ -178,6 +178,8 @@ class Triangulation {
             }
         }
 
+        // Triangulate the floors/ceilings.
+
         nextSector: for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
             const sectorIndex = parseInt(sectorIndexString);
             const sector = map.sectors[sectorIndex];
@@ -209,16 +211,16 @@ class Triangulation {
             // Now order the vertices from the linedefs into the hull polygons.
             // Sectors can have multiple hulls -- some are donut holes, but they can also be unconnected unique rooms.
             // Donut holes have the opposite winding.
-            const hulls: Vertex[][] = [];
+            const loops: Vertex[][] = [];
             const searchPileDebug = [...searchPile];
             while (searchPile.length > 0) {
                 const top = searchPile.pop()!;
-                const hull: Vertex[] = [top.vertexA, top.vertexB];
-                hulls.push(hull);
-                const hullStart = hull[0];
+                const loop: Vertex[] = [top.vertexA, top.vertexB];
+                loops.push(loop);
+                const hullStart = loop[0];
                 continueSearch: while (true) {
                     // Loop until we have completed a full ring.
-                    const last = hull[hull.length - 1];
+                    const last = loop[loop.length - 1];
 
                     for (let i = 0; i < searchPile.length; ++i) {
                         const searchTarget = searchPile[i];
@@ -233,11 +235,11 @@ class Triangulation {
                         if (Vertex.areEqual(searchTarget.vertexB, hullStart)) break continueSearch;
 
                         // Only push B, since `last` and vertexA are ==
-                        hull.push(searchTarget.vertexB);
+                        loop.push(searchTarget.vertexB);
                         continue continueSearch;
                     }
 
-                    console.info(`Unable to complete hull in sector index ${sectorIndexString}.`, searchPileDebug, hulls);
+                    console.info(`Unable to complete hull in sector index ${sectorIndexString}.`, searchPileDebug, loops);
                     continue nextSector;
                 }
             }
@@ -245,20 +247,20 @@ class Triangulation {
             let indexesCut = 0;
 
             // Simplify straight lines into single segments.
-            for (const hull of hulls) {
-                hullAgain: for (let i = 0; i < hull.length && hull.length > 3; ++i) {
+            for (const loop of loops) {
+                hullAgain: for (let i = 0; i < loop.length && loop.length > 3; ++i) {
                     // TODO: `next` could be looped on until the check condition is false to bulk these actions.
-                    const bIndex = (i + 1) % hull.length;
-                    const cIndex = (bIndex + 1) % hull.length;
-                    const a = hull[i];
-                    const b = hull[bIndex];
-                    const c = hull[cIndex];
+                    const bIndex = (i + 1) % loop.length;
+                    const cIndex = (bIndex + 1) % loop.length;
+                    const a = loop[i];
+                    const b = loop[bIndex];
+                    const c = loop[cIndex];
 
                     if ((a.x == b.x && a.x == c.x) ||
                         (a.y == b.y && a.y == c.y))
                     {
                         // Since they're in a row, slice out the redundant middle index.
-                        hull.splice(bIndex, 1);
+                        loop.splice(bIndex, 1);
                         ++indexesCut;
 
                         // Loop until there's no more mutations.
@@ -270,18 +272,27 @@ class Triangulation {
 
             function isConvex(a: Vertex, b: Vertex, c: Vertex): boolean {
                 // For clockwise winding (interior on right in Y-up Doom coords), a right turn (convex) gives a negative cross product.
-                const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
-                return cross < 0;
+                return b.subtract(a).cross(c.subtract(b)) < 0;
+            }
+
+            function isClockwise(vertices: readonly Vertex[]): boolean {
+                let area = 0;
+                for (let i = 0; i < vertices.length; i++) {
+                    const a = vertices[i];
+                    const b = vertices[(i + 1) % vertices.length];
+                    area += (b.x - a.x) * (b.y + a.y);
+                }
+                return area < 0;
             }
 
             function doesTriangleContainPoint(a: Vertex, b: Vertex, c: Vertex, point: Vertex): boolean {
-                var s = (a.x - c.x) * (point.y - c.y) - (a.y - c.y) * (point.x - c.x);
-                var t = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+                var crossAC = a.subtract(c).cross(point.subtract(c));
+                var crossBA = b.subtract(a).cross(point.subtract(a));
 
-                if ((s < 0) != (t < 0) && s != 0 && t != 0) return false;
+                if ((crossAC < 0) != (crossBA < 0) && crossAC != 0 && crossBA != 0) return false;
 
-                var d = (c.x - b.x) * (point.y - b.y) - (c.y - b.y) * (point.x - b.x);
-                return d == 0 || (d < 0) == (s + t <= 0);
+                var crossCB = c.subtract(b).cross(point.subtract(b));
+                return crossCB == 0 || (crossCB < 0) == (crossAC + crossBA <= 0);
             }
 
             function isTriangleHullContained(a: Vertex, b: Vertex, c: Vertex, hull: readonly Vertex[]): boolean {
@@ -293,10 +304,61 @@ class Triangulation {
                 return true;
             }
 
-            console.log("hulls", sectorIndex, hulls, indexesCut);
+            function isPointInsideLoop(loop: readonly Vertex[], point: Vertex): boolean {
+                // Raycast and return if odd number of intersections.
+                let inside = false;
+                for (let i = 0; i < loop.length; i++) {
+                    const a = loop[i];
+                    const b = loop[(i + 1) % loop.length];
+                    if ((a.y > point.y) == (b.y > point.y)) continue;
+                    if (point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) {
+                        inside = !inside;
+                    }
+                }
+                return inside;
+            }
 
+            function isContainedByLoop(loop: readonly Vertex[], points: readonly Vertex[]): boolean {
+                for (const point of points) {
+                    if (isPointInsideLoop(loop, point)) return true;
+                }
+                return false;
+            }
+
+            console.log("hulls", sectorIndex, loops, indexesCut);
+
+            // Find the loops that are holes (reversed winding order).
+            const holes: Vertex[][] = [];
+            for (let i = loops.length - 1; i >= 0; --i) {
+                const loop = loops[i];
+                if (isClockwise(loop)) {
+                    loops.splice(i, 1);
+                    holes.push(loop);
+                }
+            }
+
+            // Find which loops contain the holes.
+            const hulls: { outer: readonly Vertex[], holes: readonly Vertex[][] }[] = [];
+            for (let loop of loops) {
+                const containedHoles: Vertex[][] = [];
+                for (let i = holes.length - 1; i >= 0; --i) {
+                    const hole = holes[i];
+                    if (isContainedByLoop(loop, hole)) {
+                        containedHoles.push(hole);
+                        holes.splice(i, 1);
+                    }
+                }
+
+                hulls.push({ outer: loop, holes });
+            }
+
+            if (holes.length > 0) {
+                console.info(sectorIndex, "Sector contains holes that are not contained by an outer loop.", holes);
+            }
+
+            // Triangulate each loop.
             for (const hull of hulls) {
-                const cloned = [...hull];
+                const cloned = [...hull.outer];
                 const shapesStart = shapes.length;
                 for (let i = 0; i < cloned.length && cloned.length > 2; ) {
                     const bIndex = (i + 1) % cloned.length;
@@ -307,12 +369,7 @@ class Triangulation {
 
                     // The last triangle should not need any checks.
                     if (cloned.length > 3) {
-                        if (!isConvex(a, b, c)) {
-                            ++i;
-                            continue;
-                        }
-
-                        if (!isTriangleHullContained(a, b, c, hull)) {
+                        if (!isConvex(a, b, c) || !isTriangleHullContained(a, b, c, cloned)) {
                             ++i;
                             continue;
                         }
@@ -347,7 +404,7 @@ class Triangulation {
                 }
 
                 if (cloned.length > 2) {
-                    // throw new Error();
+                    console.error(sectorIndex, "Did not consume all lines.", cloned);
                 }
 
                 console.log(sectorIndex, "triangulated", cloned, hull, shapes.slice(shapesStart));

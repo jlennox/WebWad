@@ -370,6 +370,18 @@ class Vertex {
         return a.x == b.x && a.y == b.y;
     }
 
+    public subtract(other: Vertex): Vertex {
+        return new Vertex(this.x - other.x, this.y - other.y);
+    }
+
+    public dot(other: Vertex): number {
+        return this.x * other.x + this.y * other.y;
+    }
+
+    public cross(other: Vertex): number {
+        return this.x * other.y - this.y * other.x;
+    }
+
     public toString(): string {
         return `(${this.x},${this.y})`;
     }
