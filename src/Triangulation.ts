@@ -178,7 +178,7 @@ class Triangulation {
             }
         }
 
-        for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
+        nextSector: for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
             const sectorIndex = parseInt(sectorIndexString);
             const sector = map.sectors[sectorIndex];
 
@@ -237,7 +237,8 @@ class Triangulation {
                         continue continueSearch;
                     }
 
-                    throw new Error(`Unable to complete hull in sector index ${sectorIndexString}.`);
+                    console.info(`Unable to complete hull in sector index ${sectorIndexString}.`, searchPileDebug, hulls);
+                    continue nextSector;
                 }
             }
 

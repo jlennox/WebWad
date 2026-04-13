@@ -1199,7 +1199,7 @@ class Triangulation {
                 }
             }
         }
-        for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
+        nextSector: for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
             const sectorIndex = parseInt(sectorIndexString);
             const sector = map.sectors[sectorIndex];
             // Icon of Sin has a single linedef with an assigned sector off the map. No special tags. Who knows.
@@ -1252,7 +1252,8 @@ class Triangulation {
                         hull.push(searchTarget.vertexB);
                         continue continueSearch;
                     }
-                    throw new Error(`Unable to complete hull in sector index ${sectorIndexString}.`);
+                    console.info(`Unable to complete hull in sector index ${sectorIndexString}.`, searchPileDebug, hulls);
+                    continue nextSector;
                 }
             }
             let indexesCut = 0;
