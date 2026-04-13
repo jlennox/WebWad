@@ -1,5 +1,8 @@
 /// <reference path="ui.ts" />
 
+// TODO:
+// - Use the prefix for the sprites. IE, blood pool is currently showing a space marine.
+
 class VertexProgramInputs {
     public readonly aVertexPosition: number;
     public readonly aBrightness: number;
@@ -253,10 +256,9 @@ class MapView3D extends MapView {
         for (const group of [texturedGroups, middleGroups]) {
             for (const [textureName, surfaces] of group) {
                 const groupStart = vertexCount;
-                for (const rect of surfaces) {
-                    this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
+                for (const surface of surfaces) {
+                    vertexCount += this.emit(surface, positions, colors, textureCoords, spriteOffsets);
                 }
-                vertexCount += surfaces.length * 6;
                 drawGroups.push({
                     textureName,
                     start: groupStart,
@@ -269,8 +271,7 @@ class MapView3D extends MapView {
 
         for (const surface of sprites) {
             const groupStart = vertexCount;
-            this.emitRect(surface, positions, colors, textureCoords, spriteOffsets);
-            vertexCount += 6;
+            vertexCount += this.emit(surface, positions, colors, textureCoords, spriteOffsets);
             drawGroups.push({
                 textureName: surface.textureName ?? null,
                 start: groupStart,
@@ -293,8 +294,58 @@ class MapView3D extends MapView {
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(spriteOffsets), gl.STATIC_DRAW);
     }
 
-    private emitRect(
-        rect: ISurface,
+    private emit(
+        surface: ISurface,
+        positions: number[],
+        colors: number[],
+        textureCoords: number[],
+        spriteOffsets: number[],
+    ): number {
+        switch (surface.shape) {
+            case SurfaceShape.Triangle:
+                this.emitTriangle(surface, positions, colors, textureCoords, spriteOffsets);
+                return 3;
+            case SurfaceShape.Rectangle:
+                this.emitRectangle(surface, positions, colors, textureCoords, spriteOffsets);
+                return 6;
+        }
+    }
+
+    private emitTriangle(
+        surface: ISurfaceTriangle,
+        positions: number[],
+        colors: number[],
+        textureCoords: number[],
+        spriteOffsets: number[],
+    ): void {
+        // TODO: Hard exception for things that aren't wall/ceiling.
+        if (surface.type != SurfaceType.Floor && surface.type != SurfaceType.Ceiling) {
+            throw new Error();
+        }
+
+        colors.push(
+            surface.lightLevel,
+            surface.lightLevel,
+            surface.lightLevel,
+        );
+
+        positions.push(
+            surface.v1.x, surface.v1.z, -surface.v1.y,
+            surface.v2.x, surface.v2.z, -surface.v2.y,
+            surface.v3.x, surface.v3.z, -surface.v3.y,
+        );
+
+        textureCoords.push(
+            surface.v1.x / 64, surface.v1.y / 64,
+            surface.v2.x / 64, surface.v2.y / 64,
+            surface.v3.x / 64, surface.v3.y / 64,
+        );
+
+        spriteOffsets.push(0, 0, 0, 0, 0, 0);
+    }
+
+    private emitRectangle(
+        surface: ISurfaceRectangle,
         positions: number[],
         colors: number[],
         textureCoords: number[],
@@ -303,21 +354,21 @@ class MapView3D extends MapView {
         // Each rect has 6 vertices (2 triangles), which means a lot of things happen in multiples of 6.
 
         colors.push(
-            rect.lightLevel,
-            rect.lightLevel,
-            rect.lightLevel,
-            rect.lightLevel,
-            rect.lightLevel,
-            rect.lightLevel,
+            surface.lightLevel,
+            surface.lightLevel,
+            surface.lightLevel,
+            surface.lightLevel,
+            surface.lightLevel,
+            surface.lightLevel,
         );
 
-        if (rect.type == SurfaceType.Sprite) {
+        if (surface.type == SurfaceType.Sprite) {
             // All 6 vertices share the sprite's anchor (bottom-center on the floor).
-            const anchorX = (rect.x.x + rect.x2.x) / 2;
-            const anchorY = rect.x.z;            // floor height
-            const anchorZ = -rect.x.y;           // doom y -> gl z
-            const halfWidth = (rect.x2.x - rect.x.x) / 2;
-            const height = rect.y.z - rect.x.z;
+            const anchorX = (surface.x.x + surface.x2.x) / 2;
+            const anchorY = surface.x.z;            // floor height
+            const anchorZ = -surface.x.y;           // doom y -> gl z
+            const halfWidth = (surface.x2.x - surface.x.x) / 2;
+            const height = surface.y.z - surface.x.z;
 
             positions.push(
                 anchorX, anchorY, anchorZ,
@@ -343,10 +394,10 @@ class MapView3D extends MapView {
 
         // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
         // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
-        const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
-        const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
-        const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
-        const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
+        const v0x = surface.x.x, v0y = surface.x.z, v0z = -surface.x.y;
+        const v1x = surface.y.x, v1y = surface.y.z, v1z = -surface.y.y;
+        const v2x = surface.x2.x, v2y = surface.x2.z, v2z = -surface.x2.y;
+        const v3x = surface.y2.x, v3y = surface.y2.z, v3z = -surface.y2.y;
         positions.push(
             v0x, v0y, v0z,
             v1x, v1y, v1z,
@@ -358,25 +409,24 @@ class MapView3D extends MapView {
 
         spriteOffsets.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
-        const isWall = rect.textureOffsetX != null;
+        const isWall = surface.textureOffsetX != null;
 
         if (isWall) {
             // Wall UVs: U = distance along linedef, V = height position.
-            const linedefLength = Math.sqrt(
-                (rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2
-            );
-            const wallHeight = rect.y.z - rect.x.z;
-            const graphic = this.wad.getImage(rect.textureName!);
+            // TODO: Is this really needed?
+            const linedefLength = Math.sqrt((surface.x2.x - surface.x.x) ** 2 + (surface.x2.y - surface.x.y) ** 2);
+            const wallHeight = surface.y.z - surface.x.z;
+            const graphic = this.wad.getImage(surface.textureName!);
             const textureWidth = graphic.width || 64;
             const textureHeight = graphic.height || 64;
-            const offsetU = rect.textureOffsetX! / textureWidth;
-            const offsetV = rect.textureOffsetY! / textureHeight;
+            const offsetU = surface.textureOffsetX! / textureWidth;
+            const offsetV = surface.textureOffsetY! / textureHeight;
 
             const uLeft = offsetU + linedefLength / textureWidth;
             const uRight = offsetU;
             let vTop: number;
             let vBottom: number;
-            if (rect.bottomPegged) {
+            if (surface.bottomPegged) {
                 vBottom = 1 + offsetV;
                 vTop = vBottom - wallHeight / textureHeight;
             } else {
@@ -394,11 +444,12 @@ class MapView3D extends MapView {
                 uRight, vTop,     // v3: B ceiling
             );
         } else {
+            // Floors/ceilings.
             // Flat UVs: tile at 64 world units using original DOOM x/y coords.
-            const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
-            const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
-            const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
-            const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
+            const u0 = surface.x.x / 64, w0 = surface.x.y / 64;
+            const u1 = surface.y.x / 64, w1 = surface.y.y / 64;
+            const u2 = surface.x2.x / 64, w2 = surface.x2.y / 64;
+            const u3 = surface.y2.x / 64, w3 = surface.y2.y / 64;
             textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
         }
     }

@@ -355,16 +355,7 @@ class MapView2D extends MapView {
             this.redraw();
         }
     }
-    onDoubleClick(_event) {
-        // This is temporary test code.
-        const triangles = [];
-        const rects = Triangulation.getRectangles(this.currentMap);
-        for (const rect of rects) {
-            Triangulation.rectToTriangle(triangles, rect);
-        }
-        const stl = Triangulation.getStl(triangles);
-        console.log(stl);
-    }
+    onDoubleClick(_event) { }
     onKeyUp(_event) { }
     draw() {
         const context = this.canvas.getContext("2d");
@@ -515,6 +506,8 @@ class MapView2D extends MapView {
     }
 }
 /// <reference path="ui.ts" />
+// TODO:
+// - Use the prefix for the sprites. IE, blood pool is currently showing a space marine.
 class VertexProgramInputs {
     aVertexPosition;
     aBrightness;
@@ -734,10 +727,9 @@ class MapView3D extends MapView {
         for (const group of [texturedGroups, middleGroups]) {
             for (const [textureName, surfaces] of group) {
                 const groupStart = vertexCount;
-                for (const rect of surfaces) {
-                    this.emitRect(rect, positions, colors, textureCoords, spriteOffsets);
+                for (const surface of surfaces) {
+                    vertexCount += this.emit(surface, positions, colors, textureCoords, spriteOffsets);
                 }
-                vertexCount += surfaces.length * 6;
                 drawGroups.push({
                     textureName,
                     start: groupStart,
@@ -749,8 +741,7 @@ class MapView3D extends MapView {
         }
         for (const surface of sprites) {
             const groupStart = vertexCount;
-            this.emitRect(surface, positions, colors, textureCoords, spriteOffsets);
-            vertexCount += 6;
+            vertexCount += this.emit(surface, positions, colors, textureCoords, spriteOffsets);
             drawGroups.push({
                 textureName: surface.textureName ?? null,
                 start: groupStart,
@@ -768,16 +759,36 @@ class MapView3D extends MapView {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteOffsetBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(spriteOffsets), gl.STATIC_DRAW);
     }
-    emitRect(rect, positions, colors, textureCoords, spriteOffsets) {
+    emit(surface, positions, colors, textureCoords, spriteOffsets) {
+        switch (surface.shape) {
+            case SurfaceShape.Triangle:
+                this.emitTriangle(surface, positions, colors, textureCoords, spriteOffsets);
+                return 3;
+            case SurfaceShape.Rectangle:
+                this.emitRectangle(surface, positions, colors, textureCoords, spriteOffsets);
+                return 6;
+        }
+    }
+    emitTriangle(surface, positions, colors, textureCoords, spriteOffsets) {
+        // TODO: Hard exception for things that aren't wall/ceiling.
+        if (surface.type != SurfaceType.Floor && surface.type != SurfaceType.Ceiling) {
+            throw new Error();
+        }
+        colors.push(surface.lightLevel, surface.lightLevel, surface.lightLevel);
+        positions.push(surface.v1.x, surface.v1.z, -surface.v1.y, surface.v2.x, surface.v2.z, -surface.v2.y, surface.v3.x, surface.v3.z, -surface.v3.y);
+        textureCoords.push(surface.v1.x / 64, surface.v1.y / 64, surface.v2.x / 64, surface.v2.y / 64, surface.v3.x / 64, surface.v3.y / 64);
+        spriteOffsets.push(0, 0, 0, 0, 0, 0);
+    }
+    emitRectangle(surface, positions, colors, textureCoords, spriteOffsets) {
         // Each rect has 6 vertices (2 triangles), which means a lot of things happen in multiples of 6.
-        colors.push(rect.lightLevel, rect.lightLevel, rect.lightLevel, rect.lightLevel, rect.lightLevel, rect.lightLevel);
-        if (rect.type == SurfaceType.Sprite) {
+        colors.push(surface.lightLevel, surface.lightLevel, surface.lightLevel, surface.lightLevel, surface.lightLevel, surface.lightLevel);
+        if (surface.type == SurfaceType.Sprite) {
             // All 6 vertices share the sprite's anchor (bottom-center on the floor).
-            const anchorX = (rect.x.x + rect.x2.x) / 2;
-            const anchorY = rect.x.z; // floor height
-            const anchorZ = -rect.x.y; // doom y -> gl z
-            const halfWidth = (rect.x2.x - rect.x.x) / 2;
-            const height = rect.y.z - rect.x.z;
+            const anchorX = (surface.x.x + surface.x2.x) / 2;
+            const anchorY = surface.x.z; // floor height
+            const anchorZ = -surface.x.y; // doom y -> gl z
+            const halfWidth = (surface.x2.x - surface.x.x) / 2;
+            const height = surface.y.z - surface.x.z;
             positions.push(anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ, anchorX, anchorY, anchorZ);
             spriteOffsets.push(-halfWidth, 0, // v0: bottom-left
             halfWidth, 0, // v2: bottom-right
@@ -790,27 +801,28 @@ class MapView3D extends MapView {
         }
         // Remap: doom(x, y, z) -> gl(x, z, -y). Y is negated to convert Doom's left-handed coordinates
         // to GL's right-handed coordinates. Otherwise left-facing hallways become right-facing.
-        const v0x = rect.x.x, v0y = rect.x.z, v0z = -rect.x.y;
-        const v1x = rect.y.x, v1y = rect.y.z, v1z = -rect.y.y;
-        const v2x = rect.x2.x, v2y = rect.x2.z, v2z = -rect.x2.y;
-        const v3x = rect.y2.x, v3y = rect.y2.z, v3z = -rect.y2.y;
+        const v0x = surface.x.x, v0y = surface.x.z, v0z = -surface.x.y;
+        const v1x = surface.y.x, v1y = surface.y.z, v1z = -surface.y.y;
+        const v2x = surface.x2.x, v2y = surface.x2.z, v2z = -surface.x2.y;
+        const v3x = surface.y2.x, v3y = surface.y2.z, v3z = -surface.y2.y;
         positions.push(v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z, v2x, v2y, v2z, v1x, v1y, v1z, v3x, v3y, v3z);
         spriteOffsets.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        const isWall = rect.textureOffsetX != null;
+        const isWall = surface.textureOffsetX != null;
         if (isWall) {
             // Wall UVs: U = distance along linedef, V = height position.
-            const linedefLength = Math.sqrt((rect.x2.x - rect.x.x) ** 2 + (rect.x2.y - rect.x.y) ** 2);
-            const wallHeight = rect.y.z - rect.x.z;
-            const graphic = this.wad.getImage(rect.textureName);
+            // TODO: Is this really needed?
+            const linedefLength = Math.sqrt((surface.x2.x - surface.x.x) ** 2 + (surface.x2.y - surface.x.y) ** 2);
+            const wallHeight = surface.y.z - surface.x.z;
+            const graphic = this.wad.getImage(surface.textureName);
             const textureWidth = graphic.width || 64;
             const textureHeight = graphic.height || 64;
-            const offsetU = rect.textureOffsetX / textureWidth;
-            const offsetV = rect.textureOffsetY / textureHeight;
+            const offsetU = surface.textureOffsetX / textureWidth;
+            const offsetV = surface.textureOffsetY / textureHeight;
             const uLeft = offsetU + linedefLength / textureWidth;
             const uRight = offsetU;
             let vTop;
             let vBottom;
-            if (rect.bottomPegged) {
+            if (surface.bottomPegged) {
                 vBottom = 1 + offsetV;
                 vTop = vBottom - wallHeight / textureHeight;
             }
@@ -827,11 +839,12 @@ class MapView3D extends MapView {
             uRight, vTop);
         }
         else {
+            // Floors/ceilings.
             // Flat UVs: tile at 64 world units using original DOOM x/y coords.
-            const u0 = rect.x.x / 64, w0 = rect.x.y / 64;
-            const u1 = rect.y.x / 64, w1 = rect.y.y / 64;
-            const u2 = rect.x2.x / 64, w2 = rect.x2.y / 64;
-            const u3 = rect.y2.x / 64, w3 = rect.y2.y / 64;
+            const u0 = surface.x.x / 64, w0 = surface.x.y / 64;
+            const u1 = surface.y.x / 64, w1 = surface.y.y / 64;
+            const u2 = surface.x2.x / 64, w2 = surface.x2.y / 64;
+            const u3 = surface.y2.x / 64, w3 = surface.y2.y / 64;
             textureCoords.push(u0, w0, u1, w1, u2, w2, u2, w2, u1, w1, u3, w3);
         }
     }
@@ -1073,6 +1086,11 @@ var SurfaceType;
     SurfaceType[SurfaceType["MiddleWall"] = 3] = "MiddleWall";
     SurfaceType[SurfaceType["Sprite"] = 4] = "Sprite";
 })(SurfaceType || (SurfaceType = {}));
+var SurfaceShape;
+(function (SurfaceShape) {
+    SurfaceShape[SurfaceShape["Rectangle"] = 0] = "Rectangle";
+    SurfaceShape[SurfaceShape["Triangle"] = 1] = "Triangle";
+})(SurfaceShape || (SurfaceShape = {}));
 class Triangulation {
     static findSidedefTexture(right, left, getter) {
         const rightName = getter(right);
@@ -1087,7 +1105,7 @@ class Triangulation {
     }
     // This should ultimately return triangles, but for simplicity, it currently returns rectangles.
     static getRectangles(map) {
-        let rectangles = [];
+        let shapes = [];
         for (const linedef of map.linedefs) {
             const b = linedef.vertexA;
             const a = linedef.vertexB;
@@ -1101,7 +1119,8 @@ class Triangulation {
                 const sector = sectorFront ?? sectorBack;
                 if (sector == null || sidedef == null)
                     continue;
-                rectangles.push({
+                shapes.push({
+                    shape: SurfaceShape.Rectangle,
                     x: { x: a.x, y: a.y, z: sector.floorHeight },
                     y: { x: a.x, y: a.y, z: sector.ceilingHeight },
                     x2: { x: b.x, y: b.y, z: sector.floorHeight },
@@ -1122,7 +1141,8 @@ class Triangulation {
                 const upperZ = Math.max(sectorBack.floorHeight, sectorFront.floorHeight);
                 const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameLower);
                 if (sidedef != null) {
-                    rectangles.push({
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
                         x: { x: a.x, y: a.y, z: lowerZ },
                         y: { x: a.x, y: a.y, z: upperZ },
                         x2: { x: b.x, y: b.y, z: lowerZ },
@@ -1141,7 +1161,8 @@ class Triangulation {
                 const upperZ = Math.max(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
                 const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameUpper);
                 if (sidedef != null) {
-                    rectangles.push({
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
                         x: { x: a.x, y: a.y, z: lowerZ },
                         y: { x: a.x, y: a.y, z: upperZ },
                         x2: { x: b.x, y: b.y, z: lowerZ },
@@ -1162,7 +1183,8 @@ class Triangulation {
                 const lowerZ = Math.max(sectorFront.floorHeight, sectorBack.floorHeight);
                 const upperZ = Math.min(sectorFront.ceilingHeight, sectorBack.ceilingHeight);
                 if (upperZ > lowerZ) {
-                    rectangles.push({
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
                         x: { x: a.x, y: a.y, z: lowerZ },
                         y: { x: a.x, y: a.y, z: upperZ },
                         x2: { x: b.x, y: b.y, z: lowerZ },
@@ -1177,61 +1199,155 @@ class Triangulation {
                 }
             }
         }
-        for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
-            const vertices = [];
-            const usedVertixes = new Set();
+        for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
+            const sectorIndex = parseInt(sectorIndexString);
+            const sector = map.sectors[sectorIndex];
+            // Icon of Sin has a single linedef with an assigned sector off the map. No special tags. Who knows.
+            if (linedefs.length == 1) {
+                console.info(`Sector ${sectorIndex} has a single linedef, skipping.`, linedefs);
+                continue;
+            }
+            // Create a list of all of the linedefs relevant to this sector. Reverse "back" faces so further code does
+            // not need to special case them.
+            const searchPile = [];
             for (const linedef of linedefs) {
-                for (const vertex of [linedef.vertexA, linedef.vertexB]) {
-                    const vertexValue = (vertex.x << 16) | vertex.y;
-                    if (!usedVertixes.has(vertexValue)) {
-                        usedVertixes.add(vertexValue);
-                        vertices.push(vertex);
+                const front = linedef.sidedefFont.sectorIndex;
+                const back = linedef.sidedefBack?.sectorIndex;
+                // Self referencing linedefs are skippable. For example, Doom 2, Map 1, Sector 1, has a sound blocking
+                // linedef that is fully contained inside the sector.
+                if (front == back) {
+                    console.info("Skipped inclusive linedef", linedef);
+                    continue;
+                }
+                if (front == sectorIndex)
+                    searchPile.push(linedef);
+                if (back == sectorIndex)
+                    searchPile.push(linedef.tryReverse());
+            }
+            // Now order the vertices from the linedefs into the hull polygons.
+            // Sectors can have multiple hulls -- some are donut holes, but they can also be unconnected unique rooms.
+            // Donut holes have the opposite winding.
+            const hulls = [];
+            const searchPileDebug = [...searchPile];
+            while (searchPile.length > 0) {
+                const top = searchPile.pop();
+                const hull = [top.vertexA, top.vertexB];
+                hulls.push(hull);
+                const hullStart = hull[0];
+                continueSearch: while (true) {
+                    // Loop until we have completed a full ring.
+                    const last = hull[hull.length - 1];
+                    for (let i = 0; i < searchPile.length; ++i) {
+                        const searchTarget = searchPile[i];
+                        // The `last` is always a vertexB, so it must connect to a vertexA.
+                        if (!Vertex.areEqual(last, searchTarget.vertexA))
+                            continue;
+                        // Since order is not important, do the removal from the end so it's always O(1).
+                        searchPile[i] = searchPile[searchPile.length - 1];
+                        searchPile.pop();
+                        // Loop until we have completed a full ring.
+                        if (Vertex.areEqual(searchTarget.vertexB, hullStart))
+                            break continueSearch;
+                        // Only push B, since `last` and vertexA are ==
+                        hull.push(searchTarget.vertexB);
+                        continue continueSearch;
+                    }
+                    throw new Error(`Unable to complete hull in sector index ${sectorIndexString}.`);
+                }
+            }
+            let indexesCut = 0;
+            // Simplify straight lines into single segments.
+            for (const hull of hulls) {
+                hullAgain: for (let i = 0; i < hull.length && hull.length > 3; ++i) {
+                    // TODO: `next` could be looped on until the check condition is false to bulk these actions.
+                    const bIndex = (i + 1) % hull.length;
+                    const cIndex = (bIndex + 1) % hull.length;
+                    const a = hull[i];
+                    const b = hull[bIndex];
+                    const c = hull[cIndex];
+                    if ((a.x == b.x && a.x == c.x) ||
+                        (a.y == b.y && a.y == c.y)) {
+                        // Since they're in a row, slice out the redundant middle index.
+                        hull.splice(bIndex, 1);
+                        ++indexesCut;
+                        // Loop until there's no more mutations.
+                        i = 0;
+                        continue hullAgain;
                     }
                 }
             }
-            const sector = map.sectors[parseInt(sectorIndex)];
-            const floorHeight = sector.floorHeight;
-            let x = Number.POSITIVE_INFINITY;
-            let y = Number.POSITIVE_INFINITY;
-            let dx = Number.NEGATIVE_INFINITY;
-            let dy = Number.NEGATIVE_INFINITY;
-            for (const linedef of linedefs) {
-                x = Math.min(x, linedef.vertexA.x);
-                x = Math.min(x, linedef.vertexB.x);
-                y = Math.min(y, linedef.vertexA.y);
-                y = Math.min(y, linedef.vertexB.y);
-                dx = Math.max(dx, linedef.vertexA.x);
-                dx = Math.max(dx, linedef.vertexB.x);
-                dy = Math.max(dy, linedef.vertexA.y);
-                dy = Math.max(dy, linedef.vertexB.y);
+            function isConvex(a, b, c) {
+                // For clockwise winding (interior on right in Y-up Doom coords), a right turn (convex) gives a negative cross product.
+                const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+                return cross < 0;
             }
-            if (x == Number.POSITIVE_INFINITY ||
-                y == Number.POSITIVE_INFINITY ||
-                dx == Number.NEGATIVE_INFINITY ||
-                dy == Number.NEGATIVE_INFINITY) {
-                continue;
+            function doesTriangleContainPoint(a, b, c, point) {
+                var s = (a.x - c.x) * (point.y - c.y) - (a.y - c.y) * (point.x - c.x);
+                var t = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+                if ((s < 0) != (t < 0) && s != 0 && t != 0)
+                    return false;
+                var d = (c.x - b.x) * (point.y - b.y) - (c.y - b.y) * (point.x - b.x);
+                return d == 0 || (d < 0) == (s + t <= 0);
             }
-            // Floor.
-            // x2/y are swapped from ceiling so texture faces into the sector.
-            rectangles.push({
-                x: { x: x, y: y, z: floorHeight },
-                x2: { x: x, y: dy, z: floorHeight },
-                y: { x: dx, y: y, z: floorHeight },
-                y2: { x: dx, y: dy, z: floorHeight },
-                textureName: sector.textureNameFloor,
-                lightLevel: sector.lightLevel,
-                type: SurfaceType.Floor,
-            });
-            // Ceiling.
-            rectangles.push({
-                x: { x: x, y: y, z: sector.ceilingHeight },
-                y: { x: x, y: dy, z: sector.ceilingHeight },
-                x2: { x: dx, y: y, z: sector.ceilingHeight },
-                y2: { x: dx, y: dy, z: sector.ceilingHeight },
-                textureName: sector.textureNameCeiling,
-                lightLevel: sector.lightLevel,
-                type: SurfaceType.Ceiling,
-            });
+            function isTriangleHullContained(a, b, c, hull) {
+                for (const point of hull) {
+                    if (point == a || point == b || point == c)
+                        continue;
+                    if (doesTriangleContainPoint(a, b, c, point))
+                        return false;
+                }
+                return true;
+            }
+            console.log("hulls", sectorIndex, hulls, indexesCut);
+            for (const hull of hulls) {
+                const cloned = [...hull];
+                const shapesStart = shapes.length;
+                for (let i = 0; i < cloned.length && cloned.length > 2;) {
+                    const bIndex = (i + 1) % cloned.length;
+                    const cIndex = (bIndex + 1) % cloned.length;
+                    const a = cloned[i];
+                    const b = cloned[bIndex];
+                    const c = cloned[cIndex];
+                    // The last triangle should not need any checks.
+                    if (cloned.length > 3) {
+                        if (!isConvex(a, b, c)) {
+                            ++i;
+                            continue;
+                        }
+                        if (!isTriangleHullContained(a, b, c, hull)) {
+                            ++i;
+                            continue;
+                        }
+                    }
+                    shapes.push({
+                        shape: SurfaceShape.Triangle,
+                        v1: { x: a.x, y: a.y, z: sector.floorHeight },
+                        v2: { x: c.x, y: c.y, z: sector.floorHeight },
+                        v3: { x: b.x, y: b.y, z: sector.floorHeight },
+                        textureName: sector.textureNameFloor,
+                        lightLevel: sector.lightLevel,
+                        type: SurfaceType.Floor,
+                    });
+                    shapes.push({
+                        shape: SurfaceShape.Triangle,
+                        v1: { x: a.x, y: a.y, z: sector.ceilingHeight },
+                        v2: { x: b.x, y: b.y, z: sector.ceilingHeight },
+                        v3: { x: c.x, y: c.y, z: sector.ceilingHeight },
+                        textureName: sector.textureNameCeiling,
+                        lightLevel: sector.lightLevel,
+                        type: SurfaceType.Ceiling,
+                    });
+                    // The middle vertex can be cut because the tip of that V is now "filled."
+                    cloned.splice(bIndex, 1);
+                    // If `i` remained the same, we'd check [a, c, c+1] because [b] is removed, but [a-1, a, c] needs
+                    // to be checked again because that's also a validation mutation.
+                    i = Math.max(0, i - 1);
+                }
+                if (cloned.length > 2) {
+                    // throw new Error();
+                }
+                console.log(sectorIndex, "triangulated", cloned, hull, shapes.slice(shapesStart));
+            }
         }
         for (const thing of map.things) {
             const graphic = map.wadFile.getImageData(thing.description?.sprite)[0];
@@ -1245,7 +1361,8 @@ class Triangulation {
                 continue;
             }
             const floorZ = sector.floorHeight;
-            rectangles.push({
+            shapes.push({
+                shape: SurfaceShape.Rectangle,
                 x: { x: thing.x - halfWidth, y: thing.y, z: floorZ },
                 y: { x: thing.x - halfWidth, y: thing.y, z: floorZ + height },
                 x2: { x: thing.x + halfWidth, y: thing.y, z: floorZ },
@@ -1255,7 +1372,7 @@ class Triangulation {
                 type: SurfaceType.Sprite,
             });
         }
-        return rectangles;
+        return shapes;
     }
     static rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
         const bl = { x: x, y: y, z: z };
@@ -2608,7 +2725,8 @@ class BinaryFileReader {
     storedPositions = [];
     static textDecoder = new TextDecoder("us-ascii"); // Correct encoding?
     constructor(file) {
-        // Doing this is pretty silly... verify there's even unaligned values.
+        // Doing this might be pretty silly... the idea is it'll work for unaligned access, but I do not believe
+        // unaligned access exists.
         function createOffsetArrays(count, ctor) {
             const arrays = [];
             const roundedFile = file.slice(0, file.byteLength - count - file.byteLength % count);
@@ -2904,6 +3022,9 @@ class Vertex {
     static areEqual(a, b) {
         return a.x == b.x && a.y == b.y;
     }
+    toString() {
+        return `(${this.x},${this.y})`;
+    }
     pack() {
         // Mask a to avoid sign bleed.
         return (this.x & 0xFFFF) | (this.y << 16);
@@ -2964,34 +3085,49 @@ class ThingEntry {
         return (this.spawnFlags & spawnFlag) == spawnFlag;
     }
 }
+// https://doomwiki.org/wiki/Linedef
 class LinedefEntry {
     map;
     vertexAIndex;
     vertexBIndex;
-    flags; // u16
+    flags;
     linetype;
     tag;
     sidedefFrontIndex;
     sidedefBackIndex;
+    static invalidSideDefIndex = 0xFFFF;
+    get hasSidedefBack() { return this.sidedefBackIndex != LinedefEntry.invalidSideDefIndex; }
     get vertexA() { return this.map.vertexes[this.vertexAIndex]; }
     get vertexB() { return this.map.vertexes[this.vertexBIndex]; }
     get sidedefFont() { return this.map.sidedefs[this.sidedefFrontIndex]; }
-    get sidedefBack() { return this.sidedefBackIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefBackIndex]; }
-    constructor(map, reader) {
+    get sidedefBack() { return this.hasSidedefBack ? this.map.sidedefs[this.sidedefBackIndex] : undefined; }
+    constructor(map, vertexAIndex, vertexBIndex, flags, // u16
+    linetype, tag, sidedefFrontIndex, sidedefBackIndex) {
         this.map = map;
-        this.vertexAIndex = reader.readU16();
-        this.vertexBIndex = reader.readU16();
-        this.flags = reader.readU16();
-        this.linetype = reader.readU16();
-        this.tag = reader.readU16();
-        this.sidedefFrontIndex = reader.readU16();
-        this.sidedefBackIndex = reader.readU16();
+        this.vertexAIndex = vertexAIndex;
+        this.vertexBIndex = vertexBIndex;
+        this.flags = flags;
+        this.linetype = linetype;
+        this.tag = tag;
+        this.sidedefFrontIndex = sidedefFrontIndex;
+        this.sidedefBackIndex = sidedefBackIndex;
+    }
+    static read(map, reader) {
+        return new LinedefEntry(map, reader.readU16(), reader.readU16(), reader.readU16(), reader.readU16(), reader.readU16(), reader.readU16(), reader.readU16());
     }
     hasFlag(flag) {
         return (this.flags & flag) == flag;
     }
+    tryReverse() {
+        if (!this.hasSidedefBack)
+            return undefined;
+        return new LinedefEntry(this.map, this.vertexBIndex, this.vertexAIndex, this.flags, this.linetype, this.tag, this.sidedefBackIndex, this.sidedefFrontIndex);
+    }
+    toString() {
+        return `${this.vertexA}->${this.vertexB}`;
+    }
     static readAll(map, entry, reader) {
-        return entry.readAll(reader, (reader) => new LinedefEntry(map, reader));
+        return entry.readAll(reader, (reader) => LinedefEntry.read(map, reader));
     }
     static areEqual(a, b) {
         return Vertex.areEqual(a.vertexA, b.vertexA) && Vertex.areEqual(a.vertexB, b.vertexB);
@@ -3136,6 +3272,9 @@ class MapEntry {
     static getLinedefsPerSector(linedefs) {
         const linedefsPerSector = {};
         for (const linedef of linedefs) {
+            if (linedef.vertexB.x == 448 && linedef.vertexB.y == 960) {
+                console.log("found", linedef);
+            }
             for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null)
                     continue;

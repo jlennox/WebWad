@@ -30,7 +30,11 @@ enum SurfaceType {
     Sprite,
 }
 
-interface ISurface extends IRectangle {
+enum SurfaceShape {
+    Rectangle, Triangle
+}
+
+interface ISurfaceBase {
     readonly textureName: string;
     readonly lightLevel: number;
     readonly textureOffsetX?: number;
@@ -40,6 +44,16 @@ interface ISurface extends IRectangle {
     readonly bottomPegged?: boolean;
 }
 
+interface ISurfaceRectangle extends ISurfaceBase, IRectangle {
+    readonly shape: SurfaceShape.Rectangle;
+}
+
+interface ISurfaceTriangle extends ISurfaceBase, ITriangle {
+    readonly shape: SurfaceShape.Triangle;
+}
+
+type ISurface = ISurfaceRectangle | ISurfaceTriangle;
+
 interface SidedefTexture {
     readonly textureName: string;
     readonly sidedef: SideDefEntry
@@ -48,7 +62,7 @@ interface SidedefTexture {
 class Triangulation {
     private static findSidedefTexture(
         right: SideDefEntry,
-        left: SideDefEntry | null,
+        left: SideDefEntry | undefined,
         getter: (s: SideDefEntry) => string
     ): SidedefTexture | null {
         const rightName = getter(right);
@@ -63,7 +77,7 @@ class Triangulation {
 
     // This should ultimately return triangles, but for simplicity, it currently returns rectangles.
     public static getRectangles(map: MapEntry): readonly ISurface[] {
-        let rectangles: ISurface[] = [];
+        let shapes: ISurface[] = [];
 
         for (const linedef of map.linedefs) {
             const b = linedef.vertexA;
@@ -78,7 +92,8 @@ class Triangulation {
                 const sidedef = sidedefFont ?? sidedefBack;
                 const sector = sectorFront ?? sectorBack;
                 if (sector == null || sidedef == null) continue;
-                rectangles.push({
+                shapes.push({
+                    shape: SurfaceShape.Rectangle,
                     x:  { x: a.x, y: a.y, z: sector.floorHeight },
                     y:  { x: a.x, y: a.y, z: sector.ceilingHeight },
                     x2: { x: b.x, y: b.y, z: sector.floorHeight },
@@ -101,7 +116,8 @@ class Triangulation {
                 const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameLower);
 
                 if (sidedef != null) {
-                    rectangles.push({
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
                         x:  { x: a.x, y: a.y, z: lowerZ },
                         y:  { x: a.x, y: a.y, z: upperZ },
                         x2: { x: b.x, y: b.y, z: lowerZ },
@@ -122,7 +138,8 @@ class Triangulation {
                 const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameUpper);
 
                 if (sidedef != null) {
-                    rectangles.push({
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
                         x:  { x: a.x, y: a.y, z: lowerZ },
                         y:  { x: a.x, y: a.y, z: upperZ },
                         x2: { x: b.x, y: b.y, z: lowerZ },
@@ -144,7 +161,8 @@ class Triangulation {
                 const lowerZ = Math.max(sectorFront.floorHeight, sectorBack.floorHeight);
                 const upperZ = Math.min(sectorFront.ceilingHeight, sectorBack.ceilingHeight);
                 if (upperZ > lowerZ) {
-                    rectangles.push({
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
                         x:  { x: a.x, y: a.y, z: lowerZ },
                         y:  { x: a.x, y: a.y, z: upperZ },
                         x2: { x: b.x, y: b.y, z: lowerZ },
@@ -160,67 +178,179 @@ class Triangulation {
             }
         }
 
-        for (const [sectorIndex, linedefs] of Object.entries(map.linedefsPerSector)) {
-            const vertices: IVertex2D[] = [];
-            const usedVertixes = new Set<Number>();
+        for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
+            const sectorIndex = parseInt(sectorIndexString);
+            const sector = map.sectors[sectorIndex];
+
+            // Icon of Sin has a single linedef with an assigned sector off the map. No special tags. Who knows.
+            if (linedefs.length == 1) {
+                console.info(`Sector ${sectorIndex} has a single linedef, skipping.`, linedefs);
+                continue;
+            }
+
+            // Create a list of all of the linedefs relevant to this sector. Reverse "back" faces so further code does
+            // not need to special case them.
+            const searchPile: LinedefEntry[] = [];
             for (const linedef of linedefs) {
-                for (const vertex of [linedef.vertexA, linedef.vertexB]) {
-                    const vertexValue = (vertex.x << 16) | vertex.y;
-                    if (!usedVertixes.has(vertexValue)) {
-                        usedVertixes.add(vertexValue);
-                        vertices.push(vertex);
+                const front = linedef.sidedefFont.sectorIndex;
+                const back = linedef.sidedefBack?.sectorIndex;
+
+                // Self referencing linedefs are skippable. For example, Doom 2, Map 1, Sector 1, has a sound blocking
+                // linedef that is fully contained inside the sector.
+                if (front == back) {
+                    console.info("Skipped inclusive linedef", linedef);
+                    continue;
+                }
+
+                if (front == sectorIndex) searchPile.push(linedef);
+                if (back == sectorIndex) searchPile.push(linedef.tryReverse()!);
+            }
+
+            // Now order the vertices from the linedefs into the hull polygons.
+            // Sectors can have multiple hulls -- some are donut holes, but they can also be unconnected unique rooms.
+            // Donut holes have the opposite winding.
+            const hulls: Vertex[][] = [];
+            const searchPileDebug = [...searchPile];
+            while (searchPile.length > 0) {
+                const top = searchPile.pop()!;
+                const hull: Vertex[] = [top.vertexA, top.vertexB];
+                hulls.push(hull);
+                const hullStart = hull[0];
+                continueSearch: while (true) {
+                    // Loop until we have completed a full ring.
+                    const last = hull[hull.length - 1];
+
+                    for (let i = 0; i < searchPile.length; ++i) {
+                        const searchTarget = searchPile[i];
+                        // The `last` is always a vertexB, so it must connect to a vertexA.
+                        if (!Vertex.areEqual(last, searchTarget.vertexA)) continue;
+
+                        // Since order is not important, do the removal from the end so it's always O(1).
+                        searchPile[i] = searchPile[searchPile.length - 1];
+                        searchPile.pop();
+
+                        // Loop until we have completed a full ring.
+                        if (Vertex.areEqual(searchTarget.vertexB, hullStart)) break continueSearch;
+
+                        // Only push B, since `last` and vertexA are ==
+                        hull.push(searchTarget.vertexB);
+                        continue continueSearch;
+                    }
+
+                    throw new Error(`Unable to complete hull in sector index ${sectorIndexString}.`);
+                }
+            }
+
+            let indexesCut = 0;
+
+            // Simplify straight lines into single segments.
+            for (const hull of hulls) {
+                hullAgain: for (let i = 0; i < hull.length && hull.length > 3; ++i) {
+                    // TODO: `next` could be looped on until the check condition is false to bulk these actions.
+                    const bIndex = (i + 1) % hull.length;
+                    const cIndex = (bIndex + 1) % hull.length;
+                    const a = hull[i];
+                    const b = hull[bIndex];
+                    const c = hull[cIndex];
+
+                    if ((a.x == b.x && a.x == c.x) ||
+                        (a.y == b.y && a.y == c.y))
+                    {
+                        // Since they're in a row, slice out the redundant middle index.
+                        hull.splice(bIndex, 1);
+                        ++indexesCut;
+
+                        // Loop until there's no more mutations.
+                        i = 0;
+                        continue hullAgain;
                     }
                 }
             }
 
-            const sector = map.sectors[parseInt(sectorIndex)];
-            const floorHeight = sector.floorHeight;
-
-            let x = Number.POSITIVE_INFINITY;
-            let y = Number.POSITIVE_INFINITY;
-            let dx = Number.NEGATIVE_INFINITY;
-            let dy = Number.NEGATIVE_INFINITY;
-            for (const linedef of linedefs) {
-                x = Math.min(x, linedef.vertexA.x);
-                x = Math.min(x, linedef.vertexB.x);
-                y = Math.min(y, linedef.vertexA.y);
-                y = Math.min(y, linedef.vertexB.y);
-                dx = Math.max(dx, linedef.vertexA.x);
-                dx = Math.max(dx, linedef.vertexB.x);
-                dy = Math.max(dy, linedef.vertexA.y);
-                dy = Math.max(dy, linedef.vertexB.y);
+            function isConvex(a: Vertex, b: Vertex, c: Vertex): boolean {
+                // For clockwise winding (interior on right in Y-up Doom coords), a right turn (convex) gives a negative cross product.
+                const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+                return cross < 0;
             }
 
-            if (x == Number.POSITIVE_INFINITY ||
-                y == Number.POSITIVE_INFINITY ||
-                dx == Number.NEGATIVE_INFINITY ||
-                dy == Number.NEGATIVE_INFINITY)
-            {
-                continue;
+            function doesTriangleContainPoint(a: Vertex, b: Vertex, c: Vertex, point: Vertex): boolean {
+                var s = (a.x - c.x) * (point.y - c.y) - (a.y - c.y) * (point.x - c.x);
+                var t = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+
+                if ((s < 0) != (t < 0) && s != 0 && t != 0) return false;
+
+                var d = (c.x - b.x) * (point.y - b.y) - (c.y - b.y) * (point.x - b.x);
+                return d == 0 || (d < 0) == (s + t <= 0);
             }
 
-            // Floor.
-            // x2/y are swapped from ceiling so texture faces into the sector.
-            rectangles.push({
-                x: { x: x, y: y, z: floorHeight },
-                x2: { x: x, y: dy, z: floorHeight },
-                y: { x: dx, y: y, z: floorHeight },
-                y2: { x: dx, y: dy, z: floorHeight },
-                textureName: sector.textureNameFloor,
-                lightLevel: sector.lightLevel,
-                type: SurfaceType.Floor,
-            });
+            function isTriangleHullContained(a: Vertex, b: Vertex, c: Vertex, hull: readonly Vertex[]): boolean {
+                for (const point of hull) {
+                    if (point == a || point == b || point == c) continue;
+                    if (doesTriangleContainPoint(a, b, c, point)) return false;
+                }
 
-            // Ceiling.
-            rectangles.push({
-                x: { x: x, y: y, z: sector.ceilingHeight },
-                y: { x: x, y: dy, z: sector.ceilingHeight },
-                x2: { x: dx, y: y, z: sector.ceilingHeight },
-                y2: { x: dx, y: dy, z: sector.ceilingHeight },
-                textureName: sector.textureNameCeiling,
-                lightLevel: sector.lightLevel,
-                type: SurfaceType.Ceiling,
-            });
+                return true;
+            }
+
+            console.log("hulls", sectorIndex, hulls, indexesCut);
+
+            for (const hull of hulls) {
+                const cloned = [...hull];
+                const shapesStart = shapes.length;
+                for (let i = 0; i < cloned.length && cloned.length > 2; ) {
+                    const bIndex = (i + 1) % cloned.length;
+                    const cIndex = (bIndex + 1) % cloned.length;
+                    const a = cloned[i];
+                    const b = cloned[bIndex];
+                    const c = cloned[cIndex];
+
+                    // The last triangle should not need any checks.
+                    if (cloned.length > 3) {
+                        if (!isConvex(a, b, c)) {
+                            ++i;
+                            continue;
+                        }
+
+                        if (!isTriangleHullContained(a, b, c, hull)) {
+                            ++i;
+                            continue;
+                        }
+                    }
+
+                    shapes.push({
+                        shape: SurfaceShape.Triangle,
+                        v1: { x: a.x, y: a.y, z: sector.floorHeight },
+                        v2: { x: c.x, y: c.y, z: sector.floorHeight },
+                        v3: { x: b.x, y: b.y, z: sector.floorHeight },
+                        textureName: sector.textureNameFloor,
+                        lightLevel: sector.lightLevel,
+                        type: SurfaceType.Floor,
+                    });
+
+                    shapes.push({
+                        shape: SurfaceShape.Triangle,
+                        v1: { x: a.x, y: a.y, z: sector.ceilingHeight },
+                        v2: { x: b.x, y: b.y, z: sector.ceilingHeight },
+                        v3: { x: c.x, y: c.y, z: sector.ceilingHeight },
+                        textureName: sector.textureNameCeiling,
+                        lightLevel: sector.lightLevel,
+                        type: SurfaceType.Ceiling,
+                    });
+
+                    // The middle vertex can be cut because the tip of that V is now "filled."
+                    cloned.splice(bIndex, 1);
+
+                    // If `i` remained the same, we'd check [a, c, c+1] because [b] is removed, but [a-1, a, c] needs
+                    // to be checked again because that's also a validation mutation.
+                    i = Math.max(0, i - 1);
+                }
+
+                if (cloned.length > 2) {
+                    // throw new Error();
+                }
+
+                console.log(sectorIndex, "triangulated", cloned, hull, shapes.slice(shapesStart));
+            }
         }
 
         for (const thing of map.things) {
@@ -236,7 +366,8 @@ class Triangulation {
             }
 
             const floorZ = sector.floorHeight;
-            rectangles.push({
+            shapes.push({
+                shape: SurfaceShape.Rectangle,
                 x:  { x: thing.x - halfWidth, y: thing.y, z: floorZ },
                 y:  { x: thing.x - halfWidth, y: thing.y, z: floorZ + height },
                 x2: { x: thing.x + halfWidth, y: thing.y, z: floorZ },
@@ -247,7 +378,7 @@ class Triangulation {
             });
         }
 
-        return rectangles;
+        return shapes;
     }
 
     public static rectToTriangleHorizontal(

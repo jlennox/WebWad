@@ -20,7 +20,8 @@ class BinaryFileReader {
     private static readonly textDecoder = new TextDecoder("us-ascii"); // Correct encoding?
 
     constructor(file: ArrayBuffer) {
-        // Doing this is pretty silly... verify there's even unaligned values.
+        // Doing this might be pretty silly... the idea is it'll work for unaligned access, but I do not believe
+        // unaligned access exists.
         function createOffsetArrays<T>(count: number, ctor: (buff: ArrayBuffer) => T): readonly T[] {
             const arrays: T[] = [];
             const roundedFile = file.slice(0, file.byteLength - count - file.byteLength % count);
@@ -369,6 +370,10 @@ class Vertex {
         return a.x == b.x && a.y == b.y;
     }
 
+    public toString(): string {
+        return `(${this.x},${this.y})`;
+    }
+
     public pack(): number {
         // Mask a to avoid sign bleed.
         return (this.x & 0xFFFF) | (this.y << 16);
@@ -440,6 +445,7 @@ class ThingEntry {
 }
 
 const enum LinedefFlags {
+    None = 0,
     BLOCKING = 0x0001, // blocks players and monsters 	Doom 	blocking 	BLOCKF_CREATURES
     BLOCKMONSTERS = 0x0002, // blocks monsters 	Doom 	blockmonsters 	BLOCKF_MONSTERS
     TWOSIDED = 0x0004, // two sided 	Doom 	twosided
@@ -462,36 +468,57 @@ const enum LinedefFlags {
     BLOCKEVERYTHING = 0x8000, // blocks everything (includes gunshots & missiles) 	ZDoom 	blockeverything 	BLOCKF_EVERYTHING
 }
 
+// https://doomwiki.org/wiki/Linedef
 class LinedefEntry {
-    public readonly vertexAIndex: u16;
-    public readonly vertexBIndex: u16;
-    public readonly flags: LinedefFlags; // u16
-    public readonly linetype: u16;
-    public readonly tag: u16;
-    public readonly sidedefFrontIndex: u16;
-    public readonly sidedefBackIndex: u16;
+    private static readonly invalidSideDefIndex = 0xFFFF;
 
+    public get hasSidedefBack() { return this.sidedefBackIndex != LinedefEntry.invalidSideDefIndex; }
     public get vertexA(): Vertex { return this.map.vertexes[this.vertexAIndex]; }
     public get vertexB(): Vertex { return this.map.vertexes[this.vertexBIndex]; }
     public get sidedefFont(): SideDefEntry { return this.map.sidedefs[this.sidedefFrontIndex]; }
-    public get sidedefBack(): SideDefEntry | null { return this.sidedefBackIndex == 0xFFFF ? null : this.map.sidedefs[this.sidedefBackIndex]; }
+    public get sidedefBack(): SideDefEntry | undefined { return this.hasSidedefBack ? this.map.sidedefs[this.sidedefBackIndex] : undefined; }
 
-    constructor(private readonly map: MapEntry, reader: BinaryFileReader) {
-        this.vertexAIndex = reader.readU16();
-        this.vertexBIndex = reader.readU16();
-        this.flags = reader.readU16();
-        this.linetype = reader.readU16();
-        this.tag = reader.readU16();
-        this.sidedefFrontIndex = reader.readU16();
-        this.sidedefBackIndex = reader.readU16();
+    constructor(
+        public readonly map: MapEntry,
+        public readonly vertexAIndex: u16,
+        public readonly vertexBIndex: u16,
+        public readonly flags: LinedefFlags, // u16
+        public readonly linetype: u16,
+        public readonly tag: u16,
+        public readonly sidedefFrontIndex: u16,
+        public readonly sidedefBackIndex: u16,
+    ) {}
+
+    public static read(map: MapEntry, reader: BinaryFileReader): LinedefEntry {
+        return new LinedefEntry(
+            map,
+            reader.readU16(),
+            reader.readU16(),
+            reader.readU16(),
+            reader.readU16(),
+            reader.readU16(),
+            reader.readU16(),
+            reader.readU16());
     }
 
     public hasFlag(flag: LinedefFlags): boolean {
         return (this.flags & flag) == flag;
     }
 
+    public tryReverse(): LinedefEntry | undefined {
+        if (!this.hasSidedefBack) return undefined;
+
+        return new LinedefEntry(
+            this.map, this.vertexBIndex, this.vertexAIndex, this.flags,
+            this.linetype, this.tag, this.sidedefBackIndex, this.sidedefFrontIndex);
+    }
+
+    public toString(): string {
+        return `${this.vertexA}->${this.vertexB}`;
+    }
+
     public static readAll(map: MapEntry, entry: DirectoryEntry, reader: BinaryFileReader): readonly LinedefEntry[] {
-        return entry.readAll(reader, (reader) => new LinedefEntry(map, reader));
+        return entry.readAll(reader, (reader) => LinedefEntry.read(map, reader));
     }
 
     public static areEqual(a: LinedefEntry, b: LinedefEntry): boolean {
@@ -687,6 +714,9 @@ class MapEntry {
     private static getLinedefsPerSector(linedefs: readonly LinedefEntry[]): LinedefsPerSector {
         const linedefsPerSector: {[sectorIndex: number]: LinedefEntry[]} = {};
         for (const linedef of linedefs) {
+            if (linedef.vertexB.x == 448 && linedef.vertexB.y == 960) {
+                console.log("found", linedef);
+            }
             for (const sidedef of [linedef.sidedefBack, linedef.sidedefFont]) {
                 if (sidedef == null) continue;
 

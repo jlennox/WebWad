@@ -69,17 +69,7 @@ class MapView2D extends MapView {
         }
     }
 
-    protected override onDoubleClick(_event: MouseEvent): void {
-        // This is temporary test code.
-        const triangles: ITriangle[] = [];
-        const rects = Triangulation.getRectangles(this.currentMap);
-        for (const rect of rects) {
-            Triangulation.rectToTriangle(triangles, rect);
-        }
-        const stl = Triangulation.getStl(triangles);
-        console.log(stl);
-    }
-
+    protected override onDoubleClick(_event: MouseEvent): void {}
     protected override onKeyUp(_event: KeyboardEvent): void {}
 
     protected override draw(): void {
