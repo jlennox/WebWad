@@ -1295,7 +1295,7 @@ class Triangulation {
                 // For clockwise winding (interior on right in Y-up Doom coords), a right turn (convex) gives a negative cross product.
                 return b.subtract(a).cross(c.subtract(b)) < 0;
             }
-            function isClockwise(vertices) {
+            function isCounterClockwise(vertices) {
                 let area = 0;
                 for (let i = 0; i < vertices.length; i++) {
                     const a = vertices[i];
@@ -1314,7 +1314,7 @@ class Triangulation {
             }
             function isTriangleHullContained(a, b, c, hull) {
                 for (const point of hull) {
-                    if (point == a || point == b || point == c)
+                    if (Vertex.areEqual(point, a) || Vertex.areEqual(point, b) || Vertex.areEqual(point, c))
                         continue;
                     if (doesTriangleContainPoint(a, b, c, point))
                         return false;
@@ -1367,7 +1367,24 @@ class Triangulation {
                 return Math.min(a.x, b.x) <= point.x && point.x <= Math.max(a.x, b.x) &&
                     Math.min(a.y, b.y) <= point.y && point.y <= Math.max(a.y, b.y);
             }
-            function isBridgeValid(from, to, loops) {
+            function isBridgeValid(from, fromIndex, fromLoop, to, toIndex, toLoop, loops) {
+                function isInConeClockwise(prev, vertex, next, target) {
+                    const dir = target.subtract(vertex);
+                    const edgeIn = vertex.subtract(prev);
+                    const edgeOut = next.subtract(vertex);
+                    if (edgeIn.cross(edgeOut) < 0) {
+                        return edgeIn.cross(dir) < 0 && edgeOut.cross(dir) < 0;
+                    }
+                    return !(edgeIn.cross(dir) > 0 && edgeOut.cross(dir) > 0);
+                }
+                const fromPrev = fromLoop[(fromIndex - 1 + fromLoop.length) % fromLoop.length];
+                const fromNext = fromLoop[(fromIndex + 1) % fromLoop.length];
+                if (!isInConeClockwise(fromPrev, from, fromNext, to))
+                    return false;
+                const toPrev = toLoop[(toIndex - 1 + toLoop.length) % toLoop.length];
+                const toNext = toLoop[(toIndex + 1) % toLoop.length];
+                if (!isInConeClockwise(toPrev, to, toNext, from))
+                    return false;
                 for (const loop of loops) {
                     for (var i = 0; i < loop.length; i++) {
                         const a = loop[i];
@@ -1395,7 +1412,7 @@ class Triangulation {
                             for (let mergedVertex = 0; mergedVertex < merged.length; mergedVertex++) {
                                 const from = hole[holeVertex];
                                 const to = merged[mergedVertex];
-                                if (!isBridgeValid(from, to, [merged, ...remainingHoles]))
+                                if (!isBridgeValid(from, holeVertex, hole, to, mergedVertex, merged, [merged, ...remainingHoles]))
                                     continue;
                                 const reorderedHole = [
                                     ...hole.slice(holeVertex),
@@ -1419,7 +1436,7 @@ class Triangulation {
             const holes = [];
             for (let i = loops.length - 1; i >= 0; --i) {
                 const loop = loops[i];
-                if (isClockwise(loop)) {
+                if (isCounterClockwise(loop)) {
                     loops.splice(i, 1);
                     holes.push(loop);
                 }
