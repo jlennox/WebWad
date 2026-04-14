@@ -508,6 +508,17 @@ class MapView2D extends MapView {
 /// <reference path="ui.ts" />
 // TODO:
 // - Use the prefix for the sprites. IE, blood pool is currently showing a space marine.
+// - Make sprites rotate when possible.
+// BUGS:
+// - Metal wall texture is unaligned in Doom 2 map 1 opening room's hallway entrance.
+// - Outdoor demon face floor texture on Doom 2 map 20 is unaligned.
+// Unlikely, but possible:
+// - The triangulation can be optimized by ignoring a hole if:
+//   - There is nothing inside. It's likely just walls and an area that's not visible during normal game play.
+//   - All inner floors are raised. This would need to be recursively checked against all sectors inside of that sector.
+//     This works because the raised floors would paint-over where the hole would have been cut. This will not work if
+//     the floors are equal, unless there is a way to make z-order fighting not happen.
+// - Sectors with same floor/ceiling height + texture + light level can be merged for purpose of triangulation.
 class VertexProgramInputs {
     aVertexPosition;
     aBrightness;
@@ -1227,6 +1238,7 @@ class Triangulation {
                 if (back == sectorIndex)
                     searchPile.push(linedef.tryReverse());
             }
+            // TODO: Remove dead ends. Doom 2 map 22 has multiple deadends on sector 109.
             // Now order the vertices from the linedefs into the hull polygons.
             // Sectors can have multiple hulls -- some are donut holes, but they can also be unconnected unique rooms.
             // Donut holes have the opposite winding.
@@ -1269,8 +1281,7 @@ class Triangulation {
                     const a = loop[i];
                     const b = loop[bIndex];
                     const c = loop[cIndex];
-                    if ((a.x == b.x && a.x == c.x) ||
-                        (a.y == b.y && a.y == c.y)) {
+                    if (b.subtract(a).cross(c.subtract(a)) == 0) {
                         // Since they're in a row, slice out the redundant middle index.
                         loop.splice(bIndex, 1);
                         ++indexesCut;
@@ -1331,6 +1342,78 @@ class Triangulation {
                 }
                 return false;
             }
+            function segmentsIntersect(p1, p2, p3, p4) {
+                const d1 = p4.subtract(p3).cross(p1.subtract(p3));
+                const d2 = p4.subtract(p3).cross(p2.subtract(p3));
+                const d3 = p2.subtract(p1).cross(p3.subtract(p1));
+                const d4 = p2.subtract(p1).cross(p4.subtract(p1));
+                if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+                    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+                    return true;
+                }
+                // Collinear overlap cases.
+                if (d1 === 0 && isOnSegment(p3, p4, p1))
+                    return true;
+                if (d2 === 0 && isOnSegment(p3, p4, p2))
+                    return true;
+                if (d3 === 0 && isOnSegment(p1, p2, p3))
+                    return true;
+                if (d4 === 0 && isOnSegment(p1, p2, p4))
+                    return true;
+                return false;
+            }
+            // Is `point` inside A/B's AABB bounding box?
+            function isOnSegment(a, b, point) {
+                return Math.min(a.x, b.x) <= point.x && point.x <= Math.max(a.x, b.x) &&
+                    Math.min(a.y, b.y) <= point.y && point.y <= Math.max(a.y, b.y);
+            }
+            function isBridgeValid(from, to, loops) {
+                for (const loop of loops) {
+                    for (var i = 0; i < loop.length; i++) {
+                        const a = loop[i];
+                        const b = loop[(i + 1) % loop.length];
+                        if (Vertex.areEqual(a, from) || Vertex.areEqual(a, to))
+                            continue;
+                        if (Vertex.areEqual(b, from) || Vertex.areEqual(b, to))
+                            continue;
+                        if (segmentsIntersect(from, to, a, b))
+                            return false;
+                    }
+                }
+                return true;
+            }
+            // Merges the holes into the outer loop. This is done by adding a bridge (a cut) going from the hole
+            // to the outer loop. Since the holes are opposite windings, they're already in the correct order
+            // for this operation. "Real-time Collision Detection" chapter 12.5.
+            function mergeHoles(outer, holes) {
+                let merged = [...outer];
+                let remainingHoles = [...holes];
+                nextHole: while (remainingHoles.length > 0) {
+                    for (let holeIndex = 0; holeIndex < remainingHoles.length; holeIndex++) {
+                        const hole = remainingHoles[holeIndex];
+                        for (let holeVertex = 0; holeVertex < hole.length; holeVertex++) {
+                            for (let mergedVertex = 0; mergedVertex < merged.length; mergedVertex++) {
+                                const from = hole[holeVertex];
+                                const to = merged[mergedVertex];
+                                if (!isBridgeValid(from, to, [merged, ...remainingHoles]))
+                                    continue;
+                                const reorderedHole = [
+                                    ...hole.slice(holeVertex),
+                                    ...hole.slice(0, holeVertex),
+                                ];
+                                // Place cut from the outer loop into the hole and back:
+                                // ...outer... -> bridgeOuter -> bridgeHole -> ...hole... -> bridgeHole -> bridgeOuter -> ...outer...
+                                // Both bridge vertices are duplicated to form the two sides of the cut.
+                                merged.splice(mergedVertex + 1, 0, ...reorderedHole, reorderedHole[0], merged[mergedVertex]);
+                                remainingHoles.splice(holeIndex, 1);
+                                continue nextHole;
+                            }
+                        }
+                    }
+                    throw new Error("No valid bridge found for hole");
+                }
+                return merged;
+            }
             console.log("hulls", sectorIndex, loops, indexesCut);
             // Find the loops that are holes (reversed winding order).
             const holes = [];
@@ -1352,14 +1435,14 @@ class Triangulation {
                         holes.splice(i, 1);
                     }
                 }
-                hulls.push({ outer: loop, holes });
+                hulls.push({ outer: loop, holes: containedHoles });
             }
             if (holes.length > 0) {
                 console.info(sectorIndex, "Sector contains holes that are not contained by an outer loop.", holes);
             }
             // Triangulate each loop.
             for (const hull of hulls) {
-                const cloned = [...hull.outer];
+                const cloned = mergeHoles(hull.outer, hull.holes);
                 const shapesStart = shapes.length;
                 for (let i = 0; i < cloned.length && cloned.length > 2;) {
                     const bIndex = (i + 1) % cloned.length;

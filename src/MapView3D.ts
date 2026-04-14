@@ -2,6 +2,19 @@
 
 // TODO:
 // - Use the prefix for the sprites. IE, blood pool is currently showing a space marine.
+// - Make sprites rotate when possible.
+
+// BUGS:
+// - Metal wall texture is unaligned in Doom 2 map 1 opening room's hallway entrance.
+// - Outdoor demon face floor texture on Doom 2 map 20 is unaligned.
+
+// Unlikely, but possible:
+// - The triangulation can be optimized by ignoring a hole if:
+//   - There is nothing inside. It's likely just walls and an area that's not visible during normal game play.
+//   - All inner floors are raised. This would need to be recursively checked against all sectors inside of that sector.
+//     This works because the raised floors would paint-over where the hole would have been cut. This will not work if
+//     the floors are equal, unless there is a way to make z-order fighting not happen.
+// - Sectors with same floor/ceiling height + texture + light level can be merged for purpose of triangulation.
 
 class VertexProgramInputs {
     public readonly aVertexPosition: number;
