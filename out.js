@@ -511,7 +511,6 @@ class MapView2D extends MapView {
 // - Make sprites rotate when possible.
 // BUGS:
 // - Metal wall texture is unaligned in Doom 2 map 1 opening room's hallway entrance.
-// - Outdoor demon face floor texture on Doom 2 map 20 is unaligned.
 // Unlikely, but possible:
 // - The triangulation can be optimized by ignoring a hole if:
 //   - There is nothing inside. It's likely just walls and an area that's not visible during normal game play.
@@ -783,13 +782,17 @@ class MapView3D extends MapView {
         }
     }
     emitTriangle(surface, positions, colors, textureCoords, spriteOffsets) {
-        // TODO: Hard exception for things that aren't wall/ceiling.
         if (surface.type != SurfaceType.Floor && surface.type != SurfaceType.Ceiling) {
+            console.error("Invalid surface type.", surface);
             throw new Error();
         }
         colors.push(surface.lightLevel, surface.lightLevel, surface.lightLevel);
         positions.push(surface.v1.x, surface.v1.z, -surface.v1.y, surface.v2.x, surface.v2.z, -surface.v2.y, surface.v3.x, surface.v3.z, -surface.v3.y);
-        textureCoords.push(surface.v1.x / 64, surface.v1.y / 64, surface.v2.x / 64, surface.v2.y / 64, surface.v3.x / 64, surface.v3.y / 64);
+        // Floors have their winding reversed to support backface culling, so we must flip the textures to prevent
+        // them from appearing upside down. This is noticible when there's multiple 64px textures making up a single
+        // image, like the demon face teleport pad in Doom 2 map 20.
+        const ySign = surface.type == SurfaceType.Floor ? -1 : 1;
+        textureCoords.push(surface.v1.x / 64, (surface.v1.y * ySign) / 64, surface.v2.x / 64, (surface.v2.y * ySign) / 64, surface.v3.x / 64, (surface.v3.y * ySign) / 64);
         spriteOffsets.push(0, 0, 0, 0, 0, 0);
     }
     emitRectangle(surface, positions, colors, textureCoords, spriteOffsets) {
