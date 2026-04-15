@@ -72,13 +72,12 @@ class MapView3D extends MapView {
     private readonly textureCache: Map<string, WebGLTexture> = new Map();
 
     private drawGroups: readonly DrawGroup[] = [];
-    private readonly cameraPosition = { x: 0, y: 0, z: 0 };
-    private cameraYaw: number = 0;
-    private cameraPitch: number = 0;
     private readonly keysDown: Set<string> = new Set<string>();
+    private lastLevelShown: number = -Infinity;
 
-    constructor(wad: WadFile) {
-        super("MapView3D", wad);
+    constructor(wad: WadFile, settings: WadSettings) {
+        super("MapView3D", wad, settings);
+
         const gl = this.canvas.getContext("webgl2", { alpha: false });
         if (gl == null) throw new Error("WebGL2 not available.");
         this.gl = gl;
@@ -176,38 +175,45 @@ class MapView3D extends MapView {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
         this.whiteTexture = whiteTexture;
 
-        document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
-        document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
-
         setInterval(() => this.tick(), 1000 / 60);
 
         this.redraw();
     }
 
     public override async displayLevel(index: number): Promise<void> {
-        this.levelIndex = index;
+        this.lastLevelShown = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.buildGeometry();
 
-        const playerStart = this.currentMap.things.find((t) => t.type == ThingsType.PlayerOneStart);
-        if (playerStart != undefined) {
-            this.cameraPosition.x = playerStart.x;
-            this.cameraPosition.y = 41;
-            this.cameraPosition.z = -playerStart.y;
-            const radians = (playerStart.angle / 256) * (Math.PI * 2);
-            this.cameraYaw = -radians + Math.PI;
-        } else {
-            this.cameraPosition.x = 0;
-            this.cameraPosition.y = 41;
-            this.cameraPosition.z = 0;
-            this.cameraYaw = 0;
-        }
-        this.cameraPitch = 0;
+        this.resetView();
 
+        SettingsStorage.save();
         this.redraw();
     }
 
+    private resetView(): void {
+        const playerStart = this.currentMap.things.find((t) => t.type == ThingsType.PlayerOneStart);
+        if (playerStart != undefined) {
+            this.settings.cameraPosition.x = playerStart.x;
+            this.settings.cameraPosition.y = 41;
+            this.settings.cameraPosition.z = -playerStart.y;
+            const radians = (playerStart.angle / 256) * (Math.PI * 2);
+            this.settings.cameraYaw = -radians + Math.PI;
+        } else {
+            this.settings.cameraPosition.x = 0;
+            this.settings.cameraPosition.y = 41;
+            this.settings.cameraPosition.z = 0;
+            this.settings.cameraYaw = 0;
+        }
+        this.settings.cameraPitch = 0;
+    }
+
     public override activate(): void {
+        // If this UI is coming into view, be sure the geomatry/etc is up to date.
+        if (this.lastLevelShown != this.settings.levelIndex) {
+            this.displayLevel(this.settings.levelIndex);
+        }
+
         this.canvas.activate();
         UIOverlay.setLowerLeftText(
             "Tab: Switch to 2D\n" +
@@ -478,43 +484,46 @@ class MapView3D extends MapView {
         let moved = false;
         const moveSpeed = this.keysDown.has("shift") ? 30 : 10;
 
-        const forwardX = Math.sin(this.cameraYaw);
-        const forwardZ = -Math.cos(this.cameraYaw);
-        const rightX = Math.cos(this.cameraYaw);
-        const rightZ = Math.sin(this.cameraYaw);
+        const forwardX = Math.sin(this.settings.cameraYaw);
+        const forwardZ = -Math.cos(this.settings.cameraYaw);
+        const rightX = Math.cos(this.settings.cameraYaw);
+        const rightZ = Math.sin(this.settings.cameraYaw);
 
         if (this.keysDown.has("w")) {
-            this.cameraPosition.x += forwardX * moveSpeed;
-            this.cameraPosition.z += forwardZ * moveSpeed;
+            this.settings.cameraPosition.x += forwardX * moveSpeed;
+            this.settings.cameraPosition.z += forwardZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has("s")) {
-            this.cameraPosition.x -= forwardX * moveSpeed;
-            this.cameraPosition.z -= forwardZ * moveSpeed;
+            this.settings.cameraPosition.x -= forwardX * moveSpeed;
+            this.settings.cameraPosition.z -= forwardZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has("a")) {
-            this.cameraPosition.x -= rightX * moveSpeed;
-            this.cameraPosition.z -= rightZ * moveSpeed;
+            this.settings.cameraPosition.x -= rightX * moveSpeed;
+            this.settings.cameraPosition.z -= rightZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has("d")) {
-            this.cameraPosition.x += rightX * moveSpeed;
-            this.cameraPosition.z += rightZ * moveSpeed;
+            this.settings.cameraPosition.x += rightX * moveSpeed;
+            this.settings.cameraPosition.z += rightZ * moveSpeed;
             moved = true;
         }
 
         if (this.keysDown.has(" ")) {
-            this.cameraPosition.y += 20;
+            this.settings.cameraPosition.y += 20;
             moved = true;
         }
 
         if (this.keysDown.has("z")) {
-            this.cameraPosition.y -= 20;
+            this.settings.cameraPosition.y -= 20;
             moved = true;
         }
 
-        if (moved) this.redraw();
+        if (moved) {
+            this.redraw();
+            SettingsStorage.save();
+        }
     }
 
     protected override draw(): void {
@@ -538,12 +547,12 @@ class MapView3D extends MapView {
         gl.uniformMatrix4fv(this.inputs.uProjectionMatrix, false, projectionMatrix);
 
         const viewMatrix = mat4.create();
-        mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
-        mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
+        mat4.rotateX(viewMatrix, viewMatrix, this.settings.cameraPitch);
+        mat4.rotateY(viewMatrix, viewMatrix, this.settings.cameraYaw);
         mat4.translate(viewMatrix, viewMatrix, [
-            -this.cameraPosition.x,
-            -this.cameraPosition.y,
-            -this.cameraPosition.z
+            -this.settings.cameraPosition.x,
+            -this.settings.cameraPosition.y,
+            -this.settings.cameraPosition.z
         ]);
         gl.uniformMatrix4fv(this.inputs.uModelViewMatrix, false, viewMatrix);
 
@@ -588,8 +597,8 @@ class MapView3D extends MapView {
             return texture;
         }
 
-        const rightX = Math.cos(this.cameraYaw);
-        const rightZ = Math.sin(this.cameraYaw);
+        const rightX = Math.cos(this.settings.cameraYaw);
+        const rightZ = Math.sin(this.settings.cameraYaw);
         gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
 
         for (const group of this.drawGroups) {
@@ -610,13 +619,13 @@ class MapView3D extends MapView {
         if (!this.isMouseDown) return;
 
         const sensitivity = 0.003;
-        this.cameraYaw += event.movementX * sensitivity;
-        this.cameraPitch += event.movementY * sensitivity;
+        this.settings.cameraYaw += event.movementX * sensitivity;
+        this.settings.cameraPitch += event.movementY * sensitivity;
 
         // Clamp pitch to avoid flipping.
         const maxPitch = Math.PI / 2 - 0.01;
-        if (this.cameraPitch > maxPitch) this.cameraPitch = maxPitch;
-        if (this.cameraPitch < -maxPitch) this.cameraPitch = -maxPitch;
+        if (this.settings.cameraPitch > maxPitch) this.settings.cameraPitch = maxPitch;
+        if (this.settings.cameraPitch < -maxPitch) this.settings.cameraPitch = -maxPitch;
 
         this.redraw();
     }
@@ -624,7 +633,7 @@ class MapView3D extends MapView {
     protected override onWheel(event: WheelEvent): void {
         const moveSpeed = event.shiftKey ? 100 : 30;
         const direction = event.deltaY < 0 ? -1 : 1;
-        this.cameraPosition.y += moveSpeed * direction;
+        this.settings.cameraPosition.y += moveSpeed * direction;
         this.redraw();
     }
 
@@ -632,5 +641,20 @@ class MapView3D extends MapView {
     protected override onMouseDown(_event: MouseEvent): void {}
     protected override onMouseUp(_event: MouseEvent): void {}
     protected override onDoubleClick(_event: MouseEvent): void {}
-    protected override onKeyUp(_event: KeyboardEvent): void {}
+
+    protected override onKeyUp(event: KeyboardEvent): void {
+        this.keysDown.delete(event.key.toLowerCase());
+    }
+
+    protected override onKeyDown(event: KeyboardEvent): void {
+        const key = event.key.toLowerCase();
+
+        switch (key) {
+            case "r":
+                this.resetView();
+                return;
+        }
+
+        this.keysDown.add(key);
+    }
 }

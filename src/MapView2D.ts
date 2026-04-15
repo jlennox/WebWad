@@ -7,8 +7,8 @@ class MapView2D extends MapView {
     private highlightedThingIndex: number = -1;
     private dashedStrokeOffset: number = 0;
 
-    constructor(wad: WadFile) {
-        super("MapView2D", wad);
+    constructor(wad: WadFile, settings: WadSettings) {
+        super("MapView2D", wad, settings);
         this.resetValues();
 
         setInterval(() => {
@@ -71,6 +71,7 @@ class MapView2D extends MapView {
 
     protected override onDoubleClick(_event: MouseEvent): void {}
     protected override onKeyUp(_event: KeyboardEvent): void {}
+    protected override onKeyDown(_event: KeyboardEvent): void {}
 
     protected override draw(): void {
         const context = this.canvas.getContext("2d");
@@ -201,7 +202,6 @@ class MapView2D extends MapView {
     }
 
     public override async displayLevel(index: number): Promise<void> {
-        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.resetValues();
 

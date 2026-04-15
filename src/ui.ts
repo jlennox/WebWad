@@ -61,16 +61,18 @@ class GlobalCanvas {
 }
 
 abstract class MapView {
+    public get levelIndex() { return this.settings.levelIndex; }
+
     protected readonly canvas: GlobalCanvas;
     protected isMouseDown: boolean = false;
     protected currentMap: MapEntry;
 
-    public levelIndex: number = -1;
     private awaitingRender: boolean = false;
 
     protected constructor(
         public readonly name: string,
-        protected readonly wad: WadFile)
+        protected readonly wad: WadFile,
+        protected readonly settings: WadSettings)
     {
         this.canvas = GlobalCanvas.get(name);
         this.currentMap = this.wad.maps[0];
@@ -107,21 +109,26 @@ abstract class MapView {
             this.onDoubleClick(e);
         });
 
+        document.addEventListener("keydown", (e) => {
+            if (!this.canvas.isActive) return;
+            this.onKeyDown(e);
+        });
+
         document.addEventListener("keyup", (e) => {
             if (!this.canvas.isActive) return;
             switch (e.key) {
                 case "-":
-                    if (this.levelIndex == 0) {
-                        this.levelIndex = this.wad.maps.length - 1;
+                    if (this.settings.levelIndex == 0) {
+                        this.settings.levelIndex = this.wad.maps.length - 1;
                     } else {
-                        --this.levelIndex;
+                        --this.settings.levelIndex;
                     }
 
-                    this.displayLevel(this.levelIndex);
+                    this.displayLevel(this.settings.levelIndex);
                     break;
                 case "+":
-                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
-                    this.displayLevel(this.levelIndex);
+                    this.settings.levelIndex = (this.settings.levelIndex + 1) % this.wad.maps.length;
+                    this.displayLevel(this.settings.levelIndex);
                     break;
             }
 
@@ -150,6 +157,7 @@ abstract class MapView {
     protected abstract onMouseUp(event: MouseEvent): void;
     protected abstract onMouseMove(event: MouseEvent): void;
     protected abstract onDoubleClick(event: MouseEvent): void;
+    protected abstract onKeyDown(event: KeyboardEvent): void;
     protected abstract onKeyUp(event: KeyboardEvent): void;
 }
 
@@ -168,4 +176,7 @@ class UIOverlay {
     }
 }
 
-const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView3D(wad)]);
+const _fileinput = new UserFileInputUI((wad) => {
+    const settings = SettingsStorage.getWad(wad.name);
+    return [new MapView2D(wad, settings), new MapView3D(wad, settings)] as const;
+});

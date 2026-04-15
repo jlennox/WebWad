@@ -1,5 +1,5 @@
 class UserFileInput {
-    constructor(target: HTMLElement, loaded: (userFile: ArrayBuffer) => void) {
+    constructor(target: HTMLElement, loaded: (filename: string, file: ArrayBuffer) => void) {
         target.addEventListener("dragover", (event) => {
             event.stopPropagation();
             event.preventDefault();
@@ -15,7 +15,7 @@ class UserFileInput {
             const file = event.dataTransfer!.files[0]
             const reader = new FileReader();
             reader.addEventListener("loadend", (_loadEvent) => {
-                loaded(reader.result as ArrayBuffer);
+                loaded(file.name, reader.result as ArrayBuffer);
             });
 
             reader.readAsArrayBuffer(file);
@@ -38,14 +38,14 @@ class UserFileInputUI {
                     }
 
                     const blob = await response.blob()
-                    resolve(new WadFile(await blob.arrayBuffer()));
+                    resolve(new WadFile("doom1.wad", await blob.arrayBuffer()));
                 } finally {
                     this.canvas.element.classList.remove("loading");
                 }
             });
 
-            new UserFileInput(this.canvas.element, (file) => {
-                const wad = new WadFile(file);
+            new UserFileInput(this.canvas.element, (name, file) => {
+                const wad = new WadFile(name, file);
                 console.log("wad", wad);
                 resolve(wad);
             });
@@ -61,11 +61,11 @@ class UserFileInputUI {
 
             let previousMapView = mapViews[0];
 
-            function updateShownMapView(): void {
+            function updateShownMapView(force: boolean): void {
                 const nextMapview = mapViews[mapViewIndex];
 
                 // Avoid state thrashing when possible.
-                if (previousMapView.levelIndex != nextMapview.levelIndex || nextMapview.levelIndex < 0) {
+                if (previousMapView.levelIndex != nextMapview.levelIndex || force) {
                     nextMapview.displayLevel(Math.max(previousMapView.levelIndex, 0));
                     console.info(`Showing ${nextMapview.name} + ${nextMapview.levelIndex}`);
                 }
@@ -86,11 +86,11 @@ class UserFileInputUI {
                     }
 
                     mapViewIndex = (mapViewIndex + 1) % mapViews.length;
-                    updateShownMapView();
+                    updateShownMapView(false);
                 }
             });
 
-            updateShownMapView();
+            updateShownMapView(true);
         });
 
         this.draw();

@@ -65,7 +65,7 @@ class UserFileInput {
             const file = event.dataTransfer.files[0];
             const reader = new FileReader();
             reader.addEventListener("loadend", (_loadEvent) => {
-                loaded(reader.result);
+                loaded(file.name, reader.result);
             });
             reader.readAsArrayBuffer(file);
         });
@@ -84,14 +84,14 @@ class UserFileInputUI {
                         return;
                     }
                     const blob = await response.blob();
-                    resolve(new WadFile(await blob.arrayBuffer()));
+                    resolve(new WadFile("doom1.wad", await blob.arrayBuffer()));
                 }
                 finally {
                     this.canvas.element.classList.remove("loading");
                 }
             });
-            new UserFileInput(this.canvas.element, (file) => {
-                const wad = new WadFile(file);
+            new UserFileInput(this.canvas.element, (name, file) => {
+                const wad = new WadFile(name, file);
                 console.log("wad", wad);
                 resolve(wad);
             });
@@ -103,10 +103,10 @@ class UserFileInputUI {
             let mapViewIndex = 0;
             const mapViews = ctor(wad);
             let previousMapView = mapViews[0];
-            function updateShownMapView() {
+            function updateShownMapView(force) {
                 const nextMapview = mapViews[mapViewIndex];
                 // Avoid state thrashing when possible.
-                if (previousMapView.levelIndex != nextMapview.levelIndex || nextMapview.levelIndex < 0) {
+                if (previousMapView.levelIndex != nextMapview.levelIndex || force) {
                     nextMapview.displayLevel(Math.max(previousMapView.levelIndex, 0));
                     console.info(`Showing ${nextMapview.name} + ${nextMapview.levelIndex}`);
                 }
@@ -122,10 +122,10 @@ class UserFileInputUI {
                         return;
                     }
                     mapViewIndex = (mapViewIndex + 1) % mapViews.length;
-                    updateShownMapView();
+                    updateShownMapView(false);
                 }
             });
-            updateShownMapView();
+            updateShownMapView(true);
         });
         this.draw();
     }
@@ -211,14 +211,16 @@ class GlobalCanvas {
 class MapView {
     name;
     wad;
+    settings;
+    get levelIndex() { return this.settings.levelIndex; }
     canvas;
     isMouseDown = false;
     currentMap;
-    levelIndex = -1;
     awaitingRender = false;
-    constructor(name, wad) {
+    constructor(name, wad, settings) {
         this.name = name;
         this.wad = wad;
+        this.settings = settings;
         this.canvas = GlobalCanvas.get(name);
         this.currentMap = this.wad.maps[0];
         document.addEventListener("wheel", (e) => {
@@ -253,22 +255,27 @@ class MapView {
                 return;
             this.onDoubleClick(e);
         });
+        document.addEventListener("keydown", (e) => {
+            if (!this.canvas.isActive)
+                return;
+            this.onKeyDown(e);
+        });
         document.addEventListener("keyup", (e) => {
             if (!this.canvas.isActive)
                 return;
             switch (e.key) {
                 case "-":
-                    if (this.levelIndex == 0) {
-                        this.levelIndex = this.wad.maps.length - 1;
+                    if (this.settings.levelIndex == 0) {
+                        this.settings.levelIndex = this.wad.maps.length - 1;
                     }
                     else {
-                        --this.levelIndex;
+                        --this.settings.levelIndex;
                     }
-                    this.displayLevel(this.levelIndex);
+                    this.displayLevel(this.settings.levelIndex);
                     break;
                 case "+":
-                    this.levelIndex = (this.levelIndex + 1) % this.wad.maps.length;
-                    this.displayLevel(this.levelIndex);
+                    this.settings.levelIndex = (this.settings.levelIndex + 1) % this.wad.maps.length;
+                    this.displayLevel(this.settings.levelIndex);
                     break;
             }
             this.onKeyUp(e);
@@ -296,15 +303,18 @@ class UIOverlay {
         UIOverlay.instance.lowerleftElement.textContent = text;
     }
 }
-const _fileinput = new UserFileInputUI((wad) => [new MapView2D(wad), new MapView3D(wad)]);
+const _fileinput = new UserFileInputUI((wad) => {
+    const settings = SettingsStorage.getWad(wad.name);
+    return [new MapView2D(wad, settings), new MapView3D(wad, settings)];
+});
 /// <reference path="ui.ts" />
 class MapView2D extends MapView {
     viewMatrix = new DOMMatrix([1, 0, 0, -1, 0, 0]);
     thingHitTester = new HitTester();
     highlightedThingIndex = -1;
     dashedStrokeOffset = 0;
-    constructor(wad) {
-        super("MapView2D", wad);
+    constructor(wad, settings) {
+        super("MapView2D", wad, settings);
         this.resetValues();
         setInterval(() => {
             if (this.highlightedThingIndex == -1)
@@ -357,6 +367,7 @@ class MapView2D extends MapView {
     }
     onDoubleClick(_event) { }
     onKeyUp(_event) { }
+    onKeyDown(_event) { }
     draw() {
         const context = this.canvas.getContext("2d");
         if (context == null)
@@ -471,7 +482,6 @@ class MapView2D extends MapView {
         context.fillText(this.currentMap.displayName ?? "Unknown", 0, 0, 300);
     }
     async displayLevel(index) {
-        this.levelIndex = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.resetValues();
         const player1Start = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
@@ -563,12 +573,10 @@ class MapView3D extends MapView {
     whiteTexture;
     textureCache = new Map();
     drawGroups = [];
-    cameraPosition = { x: 0, y: 0, z: 0 };
-    cameraYaw = 0;
-    cameraPitch = 0;
     keysDown = new Set();
-    constructor(wad) {
-        super("MapView3D", wad);
+    lastLevelShown = -Infinity;
+    constructor(wad, settings) {
+        super("MapView3D", wad, settings);
         const gl = this.canvas.getContext("webgl2", { alpha: false });
         if (gl == null)
             throw new Error("WebGL2 not available.");
@@ -660,33 +668,39 @@ class MapView3D extends MapView {
         gl.bindTexture(gl.TEXTURE_2D, whiteTexture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
         this.whiteTexture = whiteTexture;
-        document.addEventListener("keydown", (e) => this.keysDown.add(e.key.toLowerCase()));
-        document.addEventListener("keyup", (e) => this.keysDown.delete(e.key.toLowerCase()));
         setInterval(() => this.tick(), 1000 / 60);
         this.redraw();
     }
     async displayLevel(index) {
-        this.levelIndex = index;
+        this.lastLevelShown = index;
         this.currentMap = this.wad.maps[index] ?? this.wad.maps[0];
         this.buildGeometry();
-        const playerStart = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
-        if (playerStart != undefined) {
-            this.cameraPosition.x = playerStart.x;
-            this.cameraPosition.y = 41;
-            this.cameraPosition.z = -playerStart.y;
-            const radians = (playerStart.angle / 256) * (Math.PI * 2);
-            this.cameraYaw = -radians + Math.PI;
-        }
-        else {
-            this.cameraPosition.x = 0;
-            this.cameraPosition.y = 41;
-            this.cameraPosition.z = 0;
-            this.cameraYaw = 0;
-        }
-        this.cameraPitch = 0;
+        this.resetView();
+        SettingsStorage.save();
         this.redraw();
     }
+    resetView() {
+        const playerStart = this.currentMap.things.find((t) => t.type == 1 /* ThingsType.PlayerOneStart */);
+        if (playerStart != undefined) {
+            this.settings.cameraPosition.x = playerStart.x;
+            this.settings.cameraPosition.y = 41;
+            this.settings.cameraPosition.z = -playerStart.y;
+            const radians = (playerStart.angle / 256) * (Math.PI * 2);
+            this.settings.cameraYaw = -radians + Math.PI;
+        }
+        else {
+            this.settings.cameraPosition.x = 0;
+            this.settings.cameraPosition.y = 41;
+            this.settings.cameraPosition.z = 0;
+            this.settings.cameraYaw = 0;
+        }
+        this.settings.cameraPitch = 0;
+    }
     activate() {
+        // If this UI is coming into view, be sure the geomatry/etc is up to date.
+        if (this.lastLevelShown != this.settings.levelIndex) {
+            this.displayLevel(this.settings.levelIndex);
+        }
         this.canvas.activate();
         UIOverlay.setLowerLeftText("Tab: Switch to 2D\n" +
             "Move: WASD\n" +
@@ -867,40 +881,42 @@ class MapView3D extends MapView {
     tick() {
         let moved = false;
         const moveSpeed = this.keysDown.has("shift") ? 30 : 10;
-        const forwardX = Math.sin(this.cameraYaw);
-        const forwardZ = -Math.cos(this.cameraYaw);
-        const rightX = Math.cos(this.cameraYaw);
-        const rightZ = Math.sin(this.cameraYaw);
+        const forwardX = Math.sin(this.settings.cameraYaw);
+        const forwardZ = -Math.cos(this.settings.cameraYaw);
+        const rightX = Math.cos(this.settings.cameraYaw);
+        const rightZ = Math.sin(this.settings.cameraYaw);
         if (this.keysDown.has("w")) {
-            this.cameraPosition.x += forwardX * moveSpeed;
-            this.cameraPosition.z += forwardZ * moveSpeed;
+            this.settings.cameraPosition.x += forwardX * moveSpeed;
+            this.settings.cameraPosition.z += forwardZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has("s")) {
-            this.cameraPosition.x -= forwardX * moveSpeed;
-            this.cameraPosition.z -= forwardZ * moveSpeed;
+            this.settings.cameraPosition.x -= forwardX * moveSpeed;
+            this.settings.cameraPosition.z -= forwardZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has("a")) {
-            this.cameraPosition.x -= rightX * moveSpeed;
-            this.cameraPosition.z -= rightZ * moveSpeed;
+            this.settings.cameraPosition.x -= rightX * moveSpeed;
+            this.settings.cameraPosition.z -= rightZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has("d")) {
-            this.cameraPosition.x += rightX * moveSpeed;
-            this.cameraPosition.z += rightZ * moveSpeed;
+            this.settings.cameraPosition.x += rightX * moveSpeed;
+            this.settings.cameraPosition.z += rightZ * moveSpeed;
             moved = true;
         }
         if (this.keysDown.has(" ")) {
-            this.cameraPosition.y += 20;
+            this.settings.cameraPosition.y += 20;
             moved = true;
         }
         if (this.keysDown.has("z")) {
-            this.cameraPosition.y -= 20;
+            this.settings.cameraPosition.y -= 20;
             moved = true;
         }
-        if (moved)
+        if (moved) {
             this.redraw();
+            SettingsStorage.save();
+        }
     }
     draw() {
         const gl = this.gl;
@@ -918,12 +934,12 @@ class MapView3D extends MapView {
         mat4.perspective(projectionMatrix, Math.PI / 4, aspect, 1, 50000);
         gl.uniformMatrix4fv(this.inputs.uProjectionMatrix, false, projectionMatrix);
         const viewMatrix = mat4.create();
-        mat4.rotateX(viewMatrix, viewMatrix, this.cameraPitch);
-        mat4.rotateY(viewMatrix, viewMatrix, this.cameraYaw);
+        mat4.rotateX(viewMatrix, viewMatrix, this.settings.cameraPitch);
+        mat4.rotateY(viewMatrix, viewMatrix, this.settings.cameraYaw);
         mat4.translate(viewMatrix, viewMatrix, [
-            -this.cameraPosition.x,
-            -this.cameraPosition.y,
-            -this.cameraPosition.z
+            -this.settings.cameraPosition.x,
+            -this.settings.cameraPosition.y,
+            -this.settings.cameraPosition.z
         ]);
         gl.uniformMatrix4fv(this.inputs.uModelViewMatrix, false, viewMatrix);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
@@ -959,8 +975,8 @@ class MapView3D extends MapView {
             viewer.textureCache.set(name, texture);
             return texture;
         }
-        const rightX = Math.cos(this.cameraYaw);
-        const rightZ = Math.sin(this.cameraYaw);
+        const rightX = Math.cos(this.settings.cameraYaw);
+        const rightZ = Math.sin(this.settings.cameraYaw);
         gl.uniform3f(this.inputs.uCameraRight, rightX, 0, rightZ);
         for (const group of this.drawGroups) {
             if (group.isMiddleWall || group.isSprite) {
@@ -979,598 +995,95 @@ class MapView3D extends MapView {
         if (!this.isMouseDown)
             return;
         const sensitivity = 0.003;
-        this.cameraYaw += event.movementX * sensitivity;
-        this.cameraPitch += event.movementY * sensitivity;
+        this.settings.cameraYaw += event.movementX * sensitivity;
+        this.settings.cameraPitch += event.movementY * sensitivity;
         // Clamp pitch to avoid flipping.
         const maxPitch = Math.PI / 2 - 0.01;
-        if (this.cameraPitch > maxPitch)
-            this.cameraPitch = maxPitch;
-        if (this.cameraPitch < -maxPitch)
-            this.cameraPitch = -maxPitch;
+        if (this.settings.cameraPitch > maxPitch)
+            this.settings.cameraPitch = maxPitch;
+        if (this.settings.cameraPitch < -maxPitch)
+            this.settings.cameraPitch = -maxPitch;
         this.redraw();
     }
     onWheel(event) {
         const moveSpeed = event.shiftKey ? 100 : 30;
         const direction = event.deltaY < 0 ? -1 : 1;
-        this.cameraPosition.y += moveSpeed * direction;
+        this.settings.cameraPosition.y += moveSpeed * direction;
         this.redraw();
     }
     onResize(_event) { this.redraw(); }
     onMouseDown(_event) { }
     onMouseUp(_event) { }
     onDoubleClick(_event) { }
-    onKeyUp(_event) { }
-}
-class ThingsViewerElements {
-    thingSelect;
-    closeButton;
-    spritesSelect;
-    spriteDisplay;
-    description;
-    constructor(dialog) {
-        function find(query) {
-            const element = dialog.querySelector(query);
-            if (element == null)
-                throw new Error(`Unable to find "${query}".`);
-            return element;
+    onKeyUp(event) {
+        this.keysDown.delete(event.key.toLowerCase());
+    }
+    onKeyDown(event) {
+        const key = event.key.toLowerCase();
+        switch (key) {
+            case "r":
+                this.resetView();
+                return;
         }
-        this.thingSelect = find("select[name=thing]");
-        this.closeButton = find("button[name=close]");
-        this.spritesSelect = find("select[name=sprites]");
-        this.spriteDisplay = find("canvas[name=spriteDisplay]");
-        this.description = find("div.description");
+        this.keysDown.add(key);
     }
 }
-class ThingsViewerUI {
-    wad;
-    dialog;
-    elements;
-    constructor(wad) {
-        this.wad = wad;
-        const things = Object.entries(Things.descriptions)
-            .map(([id, description]) => ({
-            name: description.description,
-            index: id
-        }))
-            .sort((a, b) => a.name.localeCompare(b.name));
-        this.dialog = document.createElement("dialog");
-        this.dialog.classList.add("thingsViewerDialog");
-        this.dialog.innerHTML = `
-                <label>Thing:</label>
-                <select name="thing">
-                    ${things.map((thing) => `<option value="${thing.index}">${Html.escape(thing.name)}</option>`).join("")}
-                </select>
-                <label>Sprites:</label>
-                <select name="sprites"></select>
-                <button name="close">Close</button>
-                <div class="description"></div>
-                <canvas name="spriteDisplay"></select>
-            </form>
-        `;
-        this.elements = new ThingsViewerElements(this.dialog);
-        this.elements.closeButton.addEventListener("click", _ => this.dialog.close());
-        this.elements.thingSelect.addEventListener("change", (e) => this.onThingChanged(e));
-        this.elements.spritesSelect.addEventListener("change", (e) => this.onSpriteChanged(e));
-        this.dialog.addEventListener("keydown", (e) => { if (e.key === "Escape")
-            this.dialog.close(); });
-        this.elements.thingSelect.dispatchEvent(new Event("change", { bubbles: true }));
-        document.body.appendChild(this.dialog);
-    }
-    onThingChanged(event) {
-        const select = event.target;
-        const thingIndex = parseInt(select.value);
-        const thingDescription = Things.descriptions[thingIndex];
-        console.log("thingDescription", thingDescription);
-        this.elements.description.textContent = JSON.stringify(thingDescription, undefined, 2);
-        this.elements.spritesSelect.innerHTML = "";
-        const images = this.wad.getImageData(thingDescription.sprite);
-        for (const image of images) {
-            const option = new Option(image.name, image.name);
-            this.elements.spritesSelect.appendChild(option);
+class SettingsStorage {
+    static key = "Settings";
+    static storedSettings;
+    static getOrDefault(key, def) {
+        const s = localStorage.getItem(key);
+        if (s == null || s == "")
+            return def();
+        try {
+            const parsed = JSON.parse(s);
+            return parsed?.version == 1 ? parsed : def();
         }
-        this.elements.spritesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        catch {
+            return def();
+        }
     }
-    onSpriteChanged(event) {
-        const select = event.target;
-        const spriteName = select.value;
-        const context = this.elements.spriteDisplay.getContext("2d");
-        const image = this.wad.getImageData(spriteName)[0];
-        if (image == null) {
-            console.error(`Unable to find image data for "${spriteName}".`);
+    static default() {
+        return {
+            version: 1,
+            wads: {},
+        };
+    }
+    static defaultWad() {
+        return {
+            version: 1,
+            levelIndex: -1,
+            cameraPosition: { x: 0, y: 0, z: 0 },
+            cameraYaw: 0,
+            cameraPitch: 0,
+        };
+    }
+    static getSettings() {
+        if (SettingsStorage.storedSettings == null) {
+            SettingsStorage.storedSettings = SettingsStorage.getOrDefault(SettingsStorage.key, SettingsStorage.default);
+        }
+        return SettingsStorage.storedSettings;
+    }
+    static getWad(name) {
+        const settings = SettingsStorage.getSettings();
+        if (settings.wads[name]?.version != 1) {
+            settings.wads[name] = SettingsStorage.defaultWad();
+        }
+        return settings.wads[name];
+    }
+    static save = debounce(() => {
+        if (SettingsStorage.storedSettings == null)
             return;
-        }
-        this.elements.spriteDisplay.width = image.width;
-        this.elements.spriteDisplay.height = image.height;
-        context.putImageData(image, 0, 0);
-    }
-    show() {
-        this.dialog.show();
-    }
+        const s = JSON.stringify(SettingsStorage.storedSettings);
+        localStorage.setItem(SettingsStorage.key, s);
+    }, 300);
 }
-class Html {
-    static escapeElement = document.createElement("div");
-    static escape(text) {
-        Html.escapeElement.textContent = text;
-        return Html.escapeElement.innerHTML;
-    }
-}
-var SurfaceType;
-(function (SurfaceType) {
-    SurfaceType[SurfaceType["Floor"] = 0] = "Floor";
-    SurfaceType[SurfaceType["Ceiling"] = 1] = "Ceiling";
-    SurfaceType[SurfaceType["Wall"] = 2] = "Wall";
-    SurfaceType[SurfaceType["MiddleWall"] = 3] = "MiddleWall";
-    SurfaceType[SurfaceType["Sprite"] = 4] = "Sprite";
-})(SurfaceType || (SurfaceType = {}));
-var SurfaceShape;
-(function (SurfaceShape) {
-    SurfaceShape[SurfaceShape["Rectangle"] = 0] = "Rectangle";
-    SurfaceShape[SurfaceShape["Triangle"] = 1] = "Triangle";
-})(SurfaceShape || (SurfaceShape = {}));
-class Triangulation {
-    static findSidedefTexture(right, left, getter) {
-        const rightName = getter(right);
-        if (rightName != "-")
-            return { textureName: rightName, sidedef: right };
-        if (left != null) {
-            const leftName = getter(left);
-            if (leftName != "-")
-                return { textureName: leftName, sidedef: left };
-        }
-        return null;
-    }
-    // This should ultimately return triangles, but for simplicity, it currently returns rectangles.
-    static getRectangles(map) {
-        let shapes = [];
-        for (const linedef of map.linedefs) {
-            const b = linedef.vertexA;
-            const a = linedef.vertexB;
-            const sidedefFont = linedef.sidedefFont;
-            const sidedefBack = linedef.sidedefBack;
-            const sectorFront = sidedefFont?.sector;
-            const sectorBack = sidedefBack?.sector;
-            // Single-sided wall: full wall from floor to ceiling.
-            if (sectorBack == null || sectorFront == null) {
-                const sidedef = sidedefFont ?? sidedefBack;
-                const sector = sectorFront ?? sectorBack;
-                if (sector == null || sidedef == null)
-                    continue;
-                shapes.push({
-                    shape: SurfaceShape.Rectangle,
-                    x: { x: a.x, y: a.y, z: sector.floorHeight },
-                    y: { x: a.x, y: a.y, z: sector.ceilingHeight },
-                    x2: { x: b.x, y: b.y, z: sector.floorHeight },
-                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight },
-                    textureName: sidedef.textureNameMiddle,
-                    lightLevel: sector.lightLevel,
-                    textureOffsetX: sidedef.textureXOffset,
-                    textureOffsetY: sidedef.textureYOffset,
-                    type: SurfaceType.Wall,
-                    bottomPegged: linedef.hasFlag(16 /* LinedefFlags.DONTPEGBOTTOM */),
-                });
-                continue;
-            }
-            // Two-sided wall: draw walls where heights differ.
-            // Lower wall (step-up between different floor heights).
-            if (sectorBack.floorHeight != sectorFront.floorHeight) {
-                const lowerZ = Math.min(sectorBack.floorHeight, sectorFront.floorHeight);
-                const upperZ = Math.max(sectorBack.floorHeight, sectorFront.floorHeight);
-                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameLower);
-                if (sidedef != null) {
-                    shapes.push({
-                        shape: SurfaceShape.Rectangle,
-                        x: { x: a.x, y: a.y, z: lowerZ },
-                        y: { x: a.x, y: a.y, z: upperZ },
-                        x2: { x: b.x, y: b.y, z: lowerZ },
-                        y2: { x: b.x, y: b.y, z: upperZ },
-                        textureName: sidedef.textureName,
-                        lightLevel: sidedef.sidedef.sector.lightLevel,
-                        textureOffsetX: sidedef.sidedef.textureXOffset,
-                        textureOffsetY: sidedef.sidedef.textureYOffset,
-                        type: SurfaceType.Wall,
-                    });
-                }
-            }
-            // Upper wall (between different ceiling heights).
-            if (sectorBack.ceilingHeight != sectorFront.ceilingHeight) {
-                const lowerZ = Math.min(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
-                const upperZ = Math.max(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
-                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameUpper);
-                if (sidedef != null) {
-                    shapes.push({
-                        shape: SurfaceShape.Rectangle,
-                        x: { x: a.x, y: a.y, z: lowerZ },
-                        y: { x: a.x, y: a.y, z: upperZ },
-                        x2: { x: b.x, y: b.y, z: lowerZ },
-                        y2: { x: b.x, y: b.y, z: upperZ },
-                        textureName: sidedef.textureName,
-                        lightLevel: sidedef.sidedef.sector.lightLevel,
-                        textureOffsetX: sidedef.sidedef.textureXOffset,
-                        textureOffsetY: sidedef.sidedef.textureYOffset,
-                        type: SurfaceType.Wall,
-                        bottomPegged: !linedef.hasFlag(8 /* LinedefFlags.DONTPEGTOP */),
-                    });
-                }
-            }
-            // Middle wall on a two-sided linedef (gates, fences, grates).
-            const middleSidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameMiddle);
-            if (middleSidedef != null) {
-                // Midtex spans the open part of the portal: from the higher floor up to the lower ceiling.
-                const lowerZ = Math.max(sectorFront.floorHeight, sectorBack.floorHeight);
-                const upperZ = Math.min(sectorFront.ceilingHeight, sectorBack.ceilingHeight);
-                if (upperZ > lowerZ) {
-                    shapes.push({
-                        shape: SurfaceShape.Rectangle,
-                        x: { x: a.x, y: a.y, z: lowerZ },
-                        y: { x: a.x, y: a.y, z: upperZ },
-                        x2: { x: b.x, y: b.y, z: lowerZ },
-                        y2: { x: b.x, y: b.y, z: upperZ },
-                        textureName: middleSidedef.textureName,
-                        lightLevel: middleSidedef.sidedef.sector.lightLevel,
-                        textureOffsetX: middleSidedef.sidedef.textureXOffset,
-                        textureOffsetY: middleSidedef.sidedef.textureYOffset,
-                        type: SurfaceType.MiddleWall,
-                        bottomPegged: linedef.hasFlag(16 /* LinedefFlags.DONTPEGBOTTOM */),
-                    });
-                }
-            }
-        }
-        // Triangulate the floors/ceilings.
-        nextSector: for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
-            const sectorIndex = parseInt(sectorIndexString);
-            const sector = map.sectors[sectorIndex];
-            // Icon of Sin has a single linedef with an assigned sector off the map. No special tags. Who knows.
-            if (linedefs.length == 1) {
-                console.info(`Sector ${sectorIndex} has a single linedef, skipping.`, linedefs);
-                continue;
-            }
-            // Create a list of all of the linedefs relevant to this sector. Reverse "back" faces so further code does
-            // not need to special case them.
-            const searchPile = [];
-            for (const linedef of linedefs) {
-                const front = linedef.sidedefFont.sectorIndex;
-                const back = linedef.sidedefBack?.sectorIndex;
-                // Self referencing linedefs are skippable. For example, Doom 2, Map 1, Sector 1, has a sound blocking
-                // linedef that is fully contained inside the sector.
-                if (front == back) {
-                    console.info("Skipped inclusive linedef", linedef);
-                    continue;
-                }
-                if (front == sectorIndex)
-                    searchPile.push(linedef);
-                if (back == sectorIndex)
-                    searchPile.push(linedef.tryReverse());
-            }
-            // TODO: Remove dead ends. Doom 2 map 22 has multiple deadends on sector 109.
-            // Now order the vertices from the linedefs into the hull polygons.
-            // Sectors can have multiple hulls -- some are donut holes, but they can also be unconnected unique rooms.
-            // Donut holes have the opposite winding.
-            const loops = [];
-            const searchPileDebug = [...searchPile];
-            while (searchPile.length > 0) {
-                const top = searchPile.pop();
-                const loop = [top.vertexA, top.vertexB];
-                loops.push(loop);
-                const hullStart = loop[0];
-                continueSearch: while (true) {
-                    // Loop until we have completed a full ring.
-                    const last = loop[loop.length - 1];
-                    for (let i = 0; i < searchPile.length; ++i) {
-                        const searchTarget = searchPile[i];
-                        // The `last` is always a vertexB, so it must connect to a vertexA.
-                        if (!Vertex.areEqual(last, searchTarget.vertexA))
-                            continue;
-                        // Since order is not important, do the removal from the end so it's always O(1).
-                        searchPile[i] = searchPile[searchPile.length - 1];
-                        searchPile.pop();
-                        // Loop until we have completed a full ring.
-                        if (Vertex.areEqual(searchTarget.vertexB, hullStart))
-                            break continueSearch;
-                        // Only push B, since `last` and vertexA are ==
-                        loop.push(searchTarget.vertexB);
-                        continue continueSearch;
-                    }
-                    console.info(`Unable to complete hull in sector index ${sectorIndexString}.`, searchPileDebug, loops);
-                    continue nextSector;
-                }
-            }
-            let indexesCut = 0;
-            // Simplify straight lines into single segments.
-            for (const loop of loops) {
-                hullAgain: for (let i = 0; i < loop.length && loop.length > 3; ++i) {
-                    // TODO: `next` could be looped on until the check condition is false to bulk these actions.
-                    const bIndex = (i + 1) % loop.length;
-                    const cIndex = (bIndex + 1) % loop.length;
-                    const a = loop[i];
-                    const b = loop[bIndex];
-                    const c = loop[cIndex];
-                    if (b.subtract(a).cross(c.subtract(a)) == 0) {
-                        // Since they're in a row, slice out the redundant middle index.
-                        loop.splice(bIndex, 1);
-                        ++indexesCut;
-                        // Loop until there's no more mutations.
-                        i = 0;
-                        continue hullAgain;
-                    }
-                }
-            }
-            function isConvex(a, b, c) {
-                // For clockwise winding (interior on right in Y-up Doom coords), a right turn (convex) gives a negative cross product.
-                return b.subtract(a).cross(c.subtract(b)) < 0;
-            }
-            function isCounterClockwise(vertices) {
-                let area = 0;
-                for (let i = 0; i < vertices.length; i++) {
-                    const a = vertices[i];
-                    const b = vertices[(i + 1) % vertices.length];
-                    area += (b.x - a.x) * (b.y + a.y);
-                }
-                return area < 0;
-            }
-            function doesTriangleContainPoint(a, b, c, point) {
-                var crossAC = a.subtract(c).cross(point.subtract(c));
-                var crossBA = b.subtract(a).cross(point.subtract(a));
-                if ((crossAC < 0) != (crossBA < 0) && crossAC != 0 && crossBA != 0)
-                    return false;
-                var crossCB = c.subtract(b).cross(point.subtract(b));
-                return crossCB == 0 || (crossCB < 0) == (crossAC + crossBA <= 0);
-            }
-            function isTriangleHullContained(a, b, c, hull) {
-                for (const point of hull) {
-                    if (Vertex.areEqual(point, a) || Vertex.areEqual(point, b) || Vertex.areEqual(point, c))
-                        continue;
-                    if (doesTriangleContainPoint(a, b, c, point))
-                        return false;
-                }
-                return true;
-            }
-            function isPointInsideLoop(loop, point) {
-                // Raycast and return if odd number of intersections.
-                let inside = false;
-                for (let i = 0; i < loop.length; i++) {
-                    const a = loop[i];
-                    const b = loop[(i + 1) % loop.length];
-                    if ((a.y > point.y) == (b.y > point.y))
-                        continue;
-                    if (point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) {
-                        inside = !inside;
-                    }
-                }
-                return inside;
-            }
-            function isContainedByLoop(loop, points) {
-                for (const point of points) {
-                    if (isPointInsideLoop(loop, point))
-                        return true;
-                }
-                return false;
-            }
-            function segmentsIntersect(p1, p2, p3, p4) {
-                const d1 = p4.subtract(p3).cross(p1.subtract(p3));
-                const d2 = p4.subtract(p3).cross(p2.subtract(p3));
-                const d3 = p2.subtract(p1).cross(p3.subtract(p1));
-                const d4 = p2.subtract(p1).cross(p4.subtract(p1));
-                if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-                    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
-                    return true;
-                }
-                // Collinear overlap cases.
-                if (d1 === 0 && isOnSegment(p3, p4, p1))
-                    return true;
-                if (d2 === 0 && isOnSegment(p3, p4, p2))
-                    return true;
-                if (d3 === 0 && isOnSegment(p1, p2, p3))
-                    return true;
-                if (d4 === 0 && isOnSegment(p1, p2, p4))
-                    return true;
-                return false;
-            }
-            // Is `point` inside A/B's AABB bounding box?
-            function isOnSegment(a, b, point) {
-                return Math.min(a.x, b.x) <= point.x && point.x <= Math.max(a.x, b.x) &&
-                    Math.min(a.y, b.y) <= point.y && point.y <= Math.max(a.y, b.y);
-            }
-            function isBridgeValid(from, fromIndex, fromLoop, to, toIndex, toLoop, loops) {
-                function isInConeClockwise(prev, vertex, next, target) {
-                    const dir = target.subtract(vertex);
-                    const edgeIn = vertex.subtract(prev);
-                    const edgeOut = next.subtract(vertex);
-                    if (edgeIn.cross(edgeOut) < 0) {
-                        return edgeIn.cross(dir) < 0 && edgeOut.cross(dir) < 0;
-                    }
-                    return !(edgeIn.cross(dir) > 0 && edgeOut.cross(dir) > 0);
-                }
-                const fromPrev = fromLoop[(fromIndex - 1 + fromLoop.length) % fromLoop.length];
-                const fromNext = fromLoop[(fromIndex + 1) % fromLoop.length];
-                if (!isInConeClockwise(fromPrev, from, fromNext, to))
-                    return false;
-                const toPrev = toLoop[(toIndex - 1 + toLoop.length) % toLoop.length];
-                const toNext = toLoop[(toIndex + 1) % toLoop.length];
-                if (!isInConeClockwise(toPrev, to, toNext, from))
-                    return false;
-                for (const loop of loops) {
-                    for (var i = 0; i < loop.length; i++) {
-                        const a = loop[i];
-                        const b = loop[(i + 1) % loop.length];
-                        if (Vertex.areEqual(a, from) || Vertex.areEqual(a, to))
-                            continue;
-                        if (Vertex.areEqual(b, from) || Vertex.areEqual(b, to))
-                            continue;
-                        if (segmentsIntersect(from, to, a, b))
-                            return false;
-                    }
-                }
-                return true;
-            }
-            // Merges the holes into the outer loop. This is done by adding a bridge (a cut) going from the hole
-            // to the outer loop. Since the holes are opposite windings, they're already in the correct order
-            // for this operation. "Real-time Collision Detection" chapter 12.5.
-            function mergeHoles(outer, holes) {
-                let merged = [...outer];
-                let remainingHoles = [...holes];
-                nextHole: while (remainingHoles.length > 0) {
-                    for (let holeIndex = 0; holeIndex < remainingHoles.length; holeIndex++) {
-                        const hole = remainingHoles[holeIndex];
-                        for (let holeVertex = 0; holeVertex < hole.length; holeVertex++) {
-                            for (let mergedVertex = 0; mergedVertex < merged.length; mergedVertex++) {
-                                const from = hole[holeVertex];
-                                const to = merged[mergedVertex];
-                                if (!isBridgeValid(from, holeVertex, hole, to, mergedVertex, merged, [merged, ...remainingHoles]))
-                                    continue;
-                                const reorderedHole = [
-                                    ...hole.slice(holeVertex),
-                                    ...hole.slice(0, holeVertex),
-                                ];
-                                // Place cut from the outer loop into the hole and back:
-                                // ...outer... -> bridgeOuter -> bridgeHole -> ...hole... -> bridgeHole -> bridgeOuter -> ...outer...
-                                // Both bridge vertices are duplicated to form the two sides of the cut.
-                                merged.splice(mergedVertex + 1, 0, ...reorderedHole, reorderedHole[0], merged[mergedVertex]);
-                                remainingHoles.splice(holeIndex, 1);
-                                continue nextHole;
-                            }
-                        }
-                    }
-                    throw new Error("No valid bridge found for hole");
-                }
-                return merged;
-            }
-            console.log("hulls", sectorIndex, loops, indexesCut);
-            // Find the loops that are holes (reversed winding order).
-            const holes = [];
-            for (let i = loops.length - 1; i >= 0; --i) {
-                const loop = loops[i];
-                if (isCounterClockwise(loop)) {
-                    loops.splice(i, 1);
-                    holes.push(loop);
-                }
-            }
-            // Find which loops contain the holes.
-            const hulls = [];
-            for (let loop of loops) {
-                const containedHoles = [];
-                for (let i = holes.length - 1; i >= 0; --i) {
-                    const hole = holes[i];
-                    if (isContainedByLoop(loop, hole)) {
-                        containedHoles.push(hole);
-                        holes.splice(i, 1);
-                    }
-                }
-                hulls.push({ outer: loop, holes: containedHoles });
-            }
-            if (holes.length > 0) {
-                console.info(sectorIndex, "Sector contains holes that are not contained by an outer loop.", holes);
-            }
-            // Triangulate each loop.
-            for (const hull of hulls) {
-                const cloned = mergeHoles(hull.outer, hull.holes);
-                const shapesStart = shapes.length;
-                for (let i = 0; i < cloned.length && cloned.length > 2;) {
-                    const bIndex = (i + 1) % cloned.length;
-                    const cIndex = (bIndex + 1) % cloned.length;
-                    const a = cloned[i];
-                    const b = cloned[bIndex];
-                    const c = cloned[cIndex];
-                    // The last triangle should not need any checks.
-                    if (cloned.length > 3) {
-                        if (!isConvex(a, b, c) || !isTriangleHullContained(a, b, c, cloned)) {
-                            ++i;
-                            continue;
-                        }
-                    }
-                    shapes.push({
-                        shape: SurfaceShape.Triangle,
-                        v1: { x: a.x, y: a.y, z: sector.floorHeight },
-                        v2: { x: c.x, y: c.y, z: sector.floorHeight },
-                        v3: { x: b.x, y: b.y, z: sector.floorHeight },
-                        textureName: sector.textureNameFloor,
-                        lightLevel: sector.lightLevel,
-                        type: SurfaceType.Floor,
-                    });
-                    shapes.push({
-                        shape: SurfaceShape.Triangle,
-                        v1: { x: a.x, y: a.y, z: sector.ceilingHeight },
-                        v2: { x: b.x, y: b.y, z: sector.ceilingHeight },
-                        v3: { x: c.x, y: c.y, z: sector.ceilingHeight },
-                        textureName: sector.textureNameCeiling,
-                        lightLevel: sector.lightLevel,
-                        type: SurfaceType.Ceiling,
-                    });
-                    // The middle vertex can be cut because the tip of that V is now "filled."
-                    cloned.splice(bIndex, 1);
-                    // If `i` remained the same, we'd check [a, c, c+1] because [b] is removed, but [a-1, a, c] needs
-                    // to be checked again because that's also a validation mutation.
-                    i = Math.max(0, i - 1);
-                }
-                if (cloned.length > 2) {
-                    console.error(sectorIndex, "Did not consume all lines.", cloned);
-                }
-                console.log(sectorIndex, "triangulated", cloned, hull, shapes.slice(shapesStart));
-            }
-        }
-        for (const thing of map.things) {
-            const graphic = map.wadFile.getImageData(thing.description?.sprite)[0];
-            if (graphic == null)
-                continue;
-            const halfWidth = graphic.width / 2;
-            const height = graphic.height;
-            const sector = map.findSector(thing.x, thing.y);
-            if (sector == null) {
-                console.error(`Unable to find sector for thing at (${thing.x}, ${thing.y}). Skipping.`, thing);
-                continue;
-            }
-            const floorZ = sector.floorHeight;
-            shapes.push({
-                shape: SurfaceShape.Rectangle,
-                x: { x: thing.x - halfWidth, y: thing.y, z: floorZ },
-                y: { x: thing.x - halfWidth, y: thing.y, z: floorZ + height },
-                x2: { x: thing.x + halfWidth, y: thing.y, z: floorZ },
-                y2: { x: thing.x + halfWidth, y: thing.y, z: floorZ + height },
-                textureName: graphic.name,
-                lightLevel: 255,
-                type: SurfaceType.Sprite,
-            });
-        }
-        return shapes;
-    }
-    static rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
-        const bl = { x: x, y: y, z: z };
-        const tl = { x: x, y: y2, z: z };
-        const br = { x: x2, y: y, z: z };
-        const tr = { x: x2, y: y2, z: z };
-        triangles.push({ v1: bl, v2: tl, v3: br });
-        triangles.push({ v1: tr, v2: tl, v3: br });
-    }
-    static rectToTriangleVertical(triangles, x, y, x2, y2, z, z2) {
-        const bl = { x: x, y: y, z: z };
-        const br = { x: x, y: y, z: z2 };
-        const tl = { x: x2, y: y2, z: z };
-        const tr = { x: x2, y: y2, z: z2 };
-        triangles.push({ v1: br, v2: bl, v3: tr });
-        triangles.push({ v1: bl, v2: tl, v3: tr });
-    }
-    static rectToTriangle(triangles, rect) {
-        if (rect.x.z == rect.x2.z) {
-            Triangulation.rectToTriangleHorizontal(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.y2.y, rect.x.z);
-        }
-        else {
-            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.x2.z);
-        }
-    }
-    static getStl(triangles) {
-        let stlString = "solid doom_map\n";
-        for (let triangle of triangles) {
-            const { v1, v2, v3 } = triangle;
-            stlString += `facet normal 0 0 0\n`;
-            stlString += `    outer loop\n`;
-            stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
-            stlString += `        vertex ${v2.x} ${v2.y} ${v2.z}\n`;
-            stlString += `        vertex ${v3.x} ${v3.y} ${v3.z}\n`;
-            stlString += `    endloop\n`;
-            stlString += `endfacet\n`;
-        }
-        stlString += "endsolid doom_map\n";
-        return stlString;
-    }
+function debounce(func, delayMs) {
+    let timeout;
+    return function (...args) {
+        clearTimeout(timeout);
+        timeout = window.setTimeout(() => func.apply(this, args), delayMs);
+    };
 }
 class Things {
     static descriptions = {
@@ -2683,6 +2196,577 @@ class Things {
         }
     };
 }
+class ThingsViewerElements {
+    thingSelect;
+    closeButton;
+    spritesSelect;
+    spriteDisplay;
+    description;
+    constructor(dialog) {
+        function find(query) {
+            const element = dialog.querySelector(query);
+            if (element == null)
+                throw new Error(`Unable to find "${query}".`);
+            return element;
+        }
+        this.thingSelect = find("select[name=thing]");
+        this.closeButton = find("button[name=close]");
+        this.spritesSelect = find("select[name=sprites]");
+        this.spriteDisplay = find("canvas[name=spriteDisplay]");
+        this.description = find("div.description");
+    }
+}
+class ThingsViewerUI {
+    wad;
+    dialog;
+    elements;
+    constructor(wad) {
+        this.wad = wad;
+        const things = Object.entries(Things.descriptions)
+            .map(([id, description]) => ({
+            name: description.description,
+            index: id
+        }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        this.dialog = document.createElement("dialog");
+        this.dialog.classList.add("thingsViewerDialog");
+        this.dialog.innerHTML = `
+                <label>Thing:</label>
+                <select name="thing">
+                    ${things.map((thing) => `<option value="${thing.index}">${Html.escape(thing.name)}</option>`).join("")}
+                </select>
+                <label>Sprites:</label>
+                <select name="sprites"></select>
+                <button name="close">Close</button>
+                <div class="description"></div>
+                <canvas name="spriteDisplay"></select>
+            </form>
+        `;
+        this.elements = new ThingsViewerElements(this.dialog);
+        this.elements.closeButton.addEventListener("click", _ => this.dialog.close());
+        this.elements.thingSelect.addEventListener("change", (e) => this.onThingChanged(e));
+        this.elements.spritesSelect.addEventListener("change", (e) => this.onSpriteChanged(e));
+        this.dialog.addEventListener("keydown", (e) => { if (e.key === "Escape")
+            this.dialog.close(); });
+        this.elements.thingSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        document.body.appendChild(this.dialog);
+    }
+    onThingChanged(event) {
+        const select = event.target;
+        const thingIndex = parseInt(select.value);
+        const thingDescription = Things.descriptions[thingIndex];
+        console.log("thingDescription", thingDescription);
+        this.elements.description.textContent = JSON.stringify(thingDescription, undefined, 2);
+        this.elements.spritesSelect.innerHTML = "";
+        const images = this.wad.getImageData(thingDescription.sprite);
+        for (const image of images) {
+            const option = new Option(image.name, image.name);
+            this.elements.spritesSelect.appendChild(option);
+        }
+        this.elements.spritesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    onSpriteChanged(event) {
+        const select = event.target;
+        const spriteName = select.value;
+        const context = this.elements.spriteDisplay.getContext("2d");
+        const image = this.wad.getImageData(spriteName)[0];
+        if (image == null) {
+            console.error(`Unable to find image data for "${spriteName}".`);
+            return;
+        }
+        this.elements.spriteDisplay.width = image.width;
+        this.elements.spriteDisplay.height = image.height;
+        context.putImageData(image, 0, 0);
+    }
+    show() {
+        this.dialog.show();
+    }
+}
+class Html {
+    static escapeElement = document.createElement("div");
+    static escape(text) {
+        Html.escapeElement.textContent = text;
+        return Html.escapeElement.innerHTML;
+    }
+}
+var SurfaceType;
+(function (SurfaceType) {
+    SurfaceType[SurfaceType["Floor"] = 0] = "Floor";
+    SurfaceType[SurfaceType["Ceiling"] = 1] = "Ceiling";
+    SurfaceType[SurfaceType["Wall"] = 2] = "Wall";
+    SurfaceType[SurfaceType["MiddleWall"] = 3] = "MiddleWall";
+    SurfaceType[SurfaceType["Sprite"] = 4] = "Sprite";
+})(SurfaceType || (SurfaceType = {}));
+var SurfaceShape;
+(function (SurfaceShape) {
+    SurfaceShape[SurfaceShape["Rectangle"] = 0] = "Rectangle";
+    SurfaceShape[SurfaceShape["Triangle"] = 1] = "Triangle";
+})(SurfaceShape || (SurfaceShape = {}));
+class Triangulation {
+    static findSidedefTexture(right, left, getter) {
+        const rightName = getter(right);
+        if (rightName != "-")
+            return { textureName: rightName, sidedef: right };
+        if (left != null) {
+            const leftName = getter(left);
+            if (leftName != "-")
+                return { textureName: leftName, sidedef: left };
+        }
+        return null;
+    }
+    // This should ultimately return triangles, but for simplicity, it currently returns rectangles.
+    static getRectangles(map) {
+        let shapes = [];
+        for (const linedef of map.linedefs) {
+            const b = linedef.vertexA;
+            const a = linedef.vertexB;
+            const sidedefFont = linedef.sidedefFont;
+            const sidedefBack = linedef.sidedefBack;
+            const sectorFront = sidedefFont?.sector;
+            const sectorBack = sidedefBack?.sector;
+            // Single-sided wall: full wall from floor to ceiling.
+            if (sectorBack == null || sectorFront == null) {
+                const sidedef = sidedefFont ?? sidedefBack;
+                const sector = sectorFront ?? sectorBack;
+                if (sector == null || sidedef == null)
+                    continue;
+                shapes.push({
+                    shape: SurfaceShape.Rectangle,
+                    x: { x: a.x, y: a.y, z: sector.floorHeight },
+                    y: { x: a.x, y: a.y, z: sector.ceilingHeight },
+                    x2: { x: b.x, y: b.y, z: sector.floorHeight },
+                    y2: { x: b.x, y: b.y, z: sector.ceilingHeight },
+                    textureName: sidedef.textureNameMiddle,
+                    lightLevel: sector.lightLevel,
+                    textureOffsetX: sidedef.textureXOffset,
+                    textureOffsetY: sidedef.textureYOffset,
+                    type: SurfaceType.Wall,
+                    bottomPegged: linedef.hasFlag(16 /* LinedefFlags.DONTPEGBOTTOM */),
+                });
+                continue;
+            }
+            // Two-sided wall: draw walls where heights differ.
+            // Lower wall (step-up between different floor heights).
+            if (sectorBack.floorHeight != sectorFront.floorHeight) {
+                const lowerZ = Math.min(sectorBack.floorHeight, sectorFront.floorHeight);
+                const upperZ = Math.max(sectorBack.floorHeight, sectorFront.floorHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameLower);
+                if (sidedef != null) {
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
+                        x: { x: a.x, y: a.y, z: lowerZ },
+                        y: { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: sidedef.textureName,
+                        lightLevel: sidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: sidedef.sidedef.textureXOffset,
+                        textureOffsetY: sidedef.sidedef.textureYOffset,
+                        type: SurfaceType.Wall,
+                    });
+                }
+            }
+            // Upper wall (between different ceiling heights).
+            if (sectorBack.ceilingHeight != sectorFront.ceilingHeight) {
+                const lowerZ = Math.min(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
+                const upperZ = Math.max(sectorBack.ceilingHeight, sectorFront.ceilingHeight);
+                const sidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameUpper);
+                if (sidedef != null) {
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
+                        x: { x: a.x, y: a.y, z: lowerZ },
+                        y: { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: sidedef.textureName,
+                        lightLevel: sidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: sidedef.sidedef.textureXOffset,
+                        textureOffsetY: sidedef.sidedef.textureYOffset,
+                        type: SurfaceType.Wall,
+                        bottomPegged: !linedef.hasFlag(8 /* LinedefFlags.DONTPEGTOP */),
+                    });
+                }
+            }
+            // Middle wall on a two-sided linedef (gates, fences, grates).
+            const middleSidedef = Triangulation.findSidedefTexture(sidedefFont, sidedefBack, (s) => s.textureNameMiddle);
+            if (middleSidedef != null) {
+                // Midtex spans the open part of the portal: from the higher floor up to the lower ceiling.
+                const lowerZ = Math.max(sectorFront.floorHeight, sectorBack.floorHeight);
+                const upperZ = Math.min(sectorFront.ceilingHeight, sectorBack.ceilingHeight);
+                if (upperZ > lowerZ) {
+                    shapes.push({
+                        shape: SurfaceShape.Rectangle,
+                        x: { x: a.x, y: a.y, z: lowerZ },
+                        y: { x: a.x, y: a.y, z: upperZ },
+                        x2: { x: b.x, y: b.y, z: lowerZ },
+                        y2: { x: b.x, y: b.y, z: upperZ },
+                        textureName: middleSidedef.textureName,
+                        lightLevel: middleSidedef.sidedef.sector.lightLevel,
+                        textureOffsetX: middleSidedef.sidedef.textureXOffset,
+                        textureOffsetY: middleSidedef.sidedef.textureYOffset,
+                        type: SurfaceType.MiddleWall,
+                        bottomPegged: linedef.hasFlag(16 /* LinedefFlags.DONTPEGBOTTOM */),
+                    });
+                }
+            }
+        }
+        // Triangulate the floors/ceilings.
+        nextSector: for (const [sectorIndexString, linedefs] of Object.entries(map.linedefsPerSector)) {
+            const sectorIndex = parseInt(sectorIndexString);
+            const sector = map.sectors[sectorIndex];
+            // Icon of Sin has a single linedef with an assigned sector off the map. No special tags. Who knows.
+            if (linedefs.length == 1) {
+                console.info(`Sector ${sectorIndex} has a single linedef, skipping.`, linedefs);
+                continue;
+            }
+            // Create a list of all of the linedefs relevant to this sector. Reverse "back" faces so further code does
+            // not need to special case them.
+            const searchPile = [];
+            for (const linedef of linedefs) {
+                const front = linedef.sidedefFont.sectorIndex;
+                const back = linedef.sidedefBack?.sectorIndex;
+                // Self referencing linedefs are skippable. For example, Doom 2, Map 1, Sector 1, has a sound blocking
+                // linedef that is fully contained inside the sector.
+                if (front == back) {
+                    console.info("Skipped inclusive linedef", linedef);
+                    continue;
+                }
+                if (front == sectorIndex)
+                    searchPile.push(linedef);
+                if (back == sectorIndex)
+                    searchPile.push(linedef.tryReverse());
+            }
+            // TODO: Remove dead ends. Doom 2 map 22 has multiple deadends on sector 109.
+            // Now order the vertices from the linedefs into the hull polygons.
+            // Sectors can have multiple hulls -- some are donut holes, but they can also be unconnected unique rooms.
+            // Donut holes have the opposite winding.
+            const loops = [];
+            const searchPileDebug = [...searchPile];
+            while (searchPile.length > 0) {
+                const top = searchPile.pop();
+                const loop = [top.vertexA, top.vertexB];
+                loops.push(loop);
+                const hullStart = loop[0];
+                continueSearch: while (true) {
+                    // Loop until we have completed a full ring.
+                    const last = loop[loop.length - 1];
+                    for (let i = 0; i < searchPile.length; ++i) {
+                        const searchTarget = searchPile[i];
+                        // The `last` is always a vertexB, so it must connect to a vertexA.
+                        if (!Vertex.areEqual(last, searchTarget.vertexA))
+                            continue;
+                        // Since order is not important, do the removal from the end so it's always O(1).
+                        searchPile[i] = searchPile[searchPile.length - 1];
+                        searchPile.pop();
+                        // Loop until we have completed a full ring.
+                        if (Vertex.areEqual(searchTarget.vertexB, hullStart))
+                            break continueSearch;
+                        // Only push B, since `last` and vertexA are ==
+                        loop.push(searchTarget.vertexB);
+                        continue continueSearch;
+                    }
+                    console.info(`Unable to complete hull in sector index ${sectorIndexString}.`, searchPileDebug, loops);
+                    continue nextSector;
+                }
+            }
+            let indexesCut = 0;
+            // Simplify straight lines into single segments.
+            for (const loop of loops) {
+                hullAgain: for (let i = 0; i < loop.length && loop.length > 3; ++i) {
+                    // TODO: `next` could be looped on until the check condition is false to bulk these actions.
+                    const bIndex = (i + 1) % loop.length;
+                    const cIndex = (bIndex + 1) % loop.length;
+                    const a = loop[i];
+                    const b = loop[bIndex];
+                    const c = loop[cIndex];
+                    if (b.subtract(a).cross(c.subtract(a)) == 0) {
+                        // Since they're in a row, slice out the redundant middle index.
+                        loop.splice(bIndex, 1);
+                        ++indexesCut;
+                        // Loop until there's no more mutations.
+                        i = 0;
+                        continue hullAgain;
+                    }
+                }
+            }
+            function isConvex(a, b, c) {
+                // For clockwise winding (interior on right in Y-up Doom coords), a right turn (convex) gives a negative cross product.
+                return b.subtract(a).cross(c.subtract(b)) < 0;
+            }
+            function isCounterClockwise(vertices) {
+                let area = 0;
+                for (let i = 0; i < vertices.length; i++) {
+                    const a = vertices[i];
+                    const b = vertices[(i + 1) % vertices.length];
+                    area += (b.x - a.x) * (b.y + a.y);
+                }
+                return area < 0;
+            }
+            function doesTriangleContainPoint(a, b, c, point) {
+                var crossAC = a.subtract(c).cross(point.subtract(c));
+                var crossBA = b.subtract(a).cross(point.subtract(a));
+                if ((crossAC < 0) != (crossBA < 0) && crossAC != 0 && crossBA != 0)
+                    return false;
+                var crossCB = c.subtract(b).cross(point.subtract(b));
+                return crossCB == 0 || (crossCB < 0) == (crossAC + crossBA <= 0);
+            }
+            function isTriangleHullContained(a, b, c, hull) {
+                for (const point of hull) {
+                    if (Vertex.areEqual(point, a) || Vertex.areEqual(point, b) || Vertex.areEqual(point, c))
+                        continue;
+                    if (doesTriangleContainPoint(a, b, c, point))
+                        return false;
+                }
+                return true;
+            }
+            function isPointInsideLoop(loop, point) {
+                // Raycast and return if odd number of intersections.
+                let inside = false;
+                for (let i = 0; i < loop.length; i++) {
+                    const a = loop[i];
+                    const b = loop[(i + 1) % loop.length];
+                    if ((a.y > point.y) == (b.y > point.y))
+                        continue;
+                    if (point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) {
+                        inside = !inside;
+                    }
+                }
+                return inside;
+            }
+            function isContainedByLoop(loop, points) {
+                for (const point of points) {
+                    if (isPointInsideLoop(loop, point))
+                        return true;
+                }
+                return false;
+            }
+            function segmentsIntersect(p1, p2, p3, p4) {
+                const d1 = p4.subtract(p3).cross(p1.subtract(p3));
+                const d2 = p4.subtract(p3).cross(p2.subtract(p3));
+                const d3 = p2.subtract(p1).cross(p3.subtract(p1));
+                const d4 = p2.subtract(p1).cross(p4.subtract(p1));
+                if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+                    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+                    return true;
+                }
+                // Collinear overlap cases.
+                if (d1 === 0 && isOnSegment(p3, p4, p1))
+                    return true;
+                if (d2 === 0 && isOnSegment(p3, p4, p2))
+                    return true;
+                if (d3 === 0 && isOnSegment(p1, p2, p3))
+                    return true;
+                if (d4 === 0 && isOnSegment(p1, p2, p4))
+                    return true;
+                return false;
+            }
+            // Is `point` inside A/B's AABB bounding box?
+            function isOnSegment(a, b, point) {
+                return Math.min(a.x, b.x) <= point.x && point.x <= Math.max(a.x, b.x) &&
+                    Math.min(a.y, b.y) <= point.y && point.y <= Math.max(a.y, b.y);
+            }
+            function isBridgeValid(from, fromIndex, fromLoop, to, toIndex, toLoop, loops) {
+                function isInConeClockwise(prev, vertex, next, target) {
+                    const dir = target.subtract(vertex);
+                    const edgeIn = vertex.subtract(prev);
+                    const edgeOut = next.subtract(vertex);
+                    if (edgeIn.cross(edgeOut) < 0) {
+                        return edgeIn.cross(dir) < 0 && edgeOut.cross(dir) < 0;
+                    }
+                    return !(edgeIn.cross(dir) > 0 && edgeOut.cross(dir) > 0);
+                }
+                const fromPrev = fromLoop[(fromIndex - 1 + fromLoop.length) % fromLoop.length];
+                const fromNext = fromLoop[(fromIndex + 1) % fromLoop.length];
+                if (!isInConeClockwise(fromPrev, from, fromNext, to))
+                    return false;
+                const toPrev = toLoop[(toIndex - 1 + toLoop.length) % toLoop.length];
+                const toNext = toLoop[(toIndex + 1) % toLoop.length];
+                if (!isInConeClockwise(toPrev, to, toNext, from))
+                    return false;
+                for (const loop of loops) {
+                    for (var i = 0; i < loop.length; i++) {
+                        const a = loop[i];
+                        const b = loop[(i + 1) % loop.length];
+                        if (Vertex.areEqual(a, from) || Vertex.areEqual(a, to))
+                            continue;
+                        if (Vertex.areEqual(b, from) || Vertex.areEqual(b, to))
+                            continue;
+                        if (segmentsIntersect(from, to, a, b))
+                            return false;
+                    }
+                }
+                return true;
+            }
+            // Merges the holes into the outer loop. This is done by adding a bridge (a cut) going from the hole
+            // to the outer loop. Since the holes are opposite windings, they're already in the correct order
+            // for this operation. "Real-time Collision Detection" chapter 12.5.
+            function mergeHoles(outer, holes) {
+                let merged = [...outer];
+                let remainingHoles = [...holes];
+                nextHole: while (remainingHoles.length > 0) {
+                    for (let holeIndex = 0; holeIndex < remainingHoles.length; holeIndex++) {
+                        const hole = remainingHoles[holeIndex];
+                        for (let holeVertex = 0; holeVertex < hole.length; holeVertex++) {
+                            for (let mergedVertex = 0; mergedVertex < merged.length; mergedVertex++) {
+                                const from = hole[holeVertex];
+                                const to = merged[mergedVertex];
+                                if (!isBridgeValid(from, holeVertex, hole, to, mergedVertex, merged, [merged, ...remainingHoles]))
+                                    continue;
+                                const reorderedHole = [
+                                    ...hole.slice(holeVertex),
+                                    ...hole.slice(0, holeVertex),
+                                ];
+                                // Place cut from the outer loop into the hole and back:
+                                // ...outer... -> bridgeOuter -> bridgeHole -> ...hole... -> bridgeHole -> bridgeOuter -> ...outer...
+                                // Both bridge vertices are duplicated to form the two sides of the cut.
+                                merged.splice(mergedVertex + 1, 0, ...reorderedHole, reorderedHole[0], merged[mergedVertex]);
+                                remainingHoles.splice(holeIndex, 1);
+                                continue nextHole;
+                            }
+                        }
+                    }
+                    throw new Error("No valid bridge found for hole");
+                }
+                return merged;
+            }
+            console.log("hulls", sectorIndex, loops, indexesCut);
+            // Find the loops that are holes (reversed winding order).
+            const holes = [];
+            for (let i = loops.length - 1; i >= 0; --i) {
+                const loop = loops[i];
+                if (isCounterClockwise(loop)) {
+                    loops.splice(i, 1);
+                    holes.push(loop);
+                }
+            }
+            // Find which loops contain the holes.
+            const hulls = [];
+            for (let loop of loops) {
+                const containedHoles = [];
+                for (let i = holes.length - 1; i >= 0; --i) {
+                    const hole = holes[i];
+                    if (isContainedByLoop(loop, hole)) {
+                        containedHoles.push(hole);
+                        holes.splice(i, 1);
+                    }
+                }
+                hulls.push({ outer: loop, holes: containedHoles });
+            }
+            if (holes.length > 0) {
+                console.info(sectorIndex, "Sector contains holes that are not contained by an outer loop.", holes);
+            }
+            // Triangulate each loop.
+            for (const hull of hulls) {
+                const cloned = mergeHoles(hull.outer, hull.holes);
+                const shapesStart = shapes.length;
+                for (let i = 0; i < cloned.length && cloned.length > 2;) {
+                    const bIndex = (i + 1) % cloned.length;
+                    const cIndex = (bIndex + 1) % cloned.length;
+                    const a = cloned[i];
+                    const b = cloned[bIndex];
+                    const c = cloned[cIndex];
+                    // The last triangle should not need any checks.
+                    if (cloned.length > 3) {
+                        if (!isConvex(a, b, c) || !isTriangleHullContained(a, b, c, cloned)) {
+                            ++i;
+                            continue;
+                        }
+                    }
+                    shapes.push({
+                        shape: SurfaceShape.Triangle,
+                        v1: { x: a.x, y: a.y, z: sector.floorHeight },
+                        v2: { x: c.x, y: c.y, z: sector.floorHeight },
+                        v3: { x: b.x, y: b.y, z: sector.floorHeight },
+                        textureName: sector.textureNameFloor,
+                        lightLevel: sector.lightLevel,
+                        type: SurfaceType.Floor,
+                    });
+                    shapes.push({
+                        shape: SurfaceShape.Triangle,
+                        v1: { x: a.x, y: a.y, z: sector.ceilingHeight },
+                        v2: { x: b.x, y: b.y, z: sector.ceilingHeight },
+                        v3: { x: c.x, y: c.y, z: sector.ceilingHeight },
+                        textureName: sector.textureNameCeiling,
+                        lightLevel: sector.lightLevel,
+                        type: SurfaceType.Ceiling,
+                    });
+                    // The middle vertex can be cut because the tip of that V is now "filled."
+                    cloned.splice(bIndex, 1);
+                    // If `i` remained the same, we'd check [a, c, c+1] because [b] is removed, but [a-1, a, c] needs
+                    // to be checked again because that's also a validation mutation.
+                    i = Math.max(0, i - 1);
+                }
+                if (cloned.length > 2) {
+                    console.error(sectorIndex, "Did not consume all lines.", cloned);
+                }
+                console.log(sectorIndex, "triangulated", cloned, hull, shapes.slice(shapesStart));
+            }
+        }
+        for (const thing of map.things) {
+            const graphic = map.wadFile.getImageData(thing.description?.sprite)[0];
+            if (graphic == null)
+                continue;
+            const halfWidth = graphic.width / 2;
+            const height = graphic.height;
+            const sector = map.findSector(thing.x, thing.y);
+            if (sector == null) {
+                console.error(`Unable to find sector for thing at (${thing.x}, ${thing.y}). Skipping.`, thing);
+                continue;
+            }
+            const floorZ = sector.floorHeight;
+            shapes.push({
+                shape: SurfaceShape.Rectangle,
+                x: { x: thing.x - halfWidth, y: thing.y, z: floorZ },
+                y: { x: thing.x - halfWidth, y: thing.y, z: floorZ + height },
+                x2: { x: thing.x + halfWidth, y: thing.y, z: floorZ },
+                y2: { x: thing.x + halfWidth, y: thing.y, z: floorZ + height },
+                textureName: graphic.name,
+                lightLevel: 255,
+                type: SurfaceType.Sprite,
+            });
+        }
+        return shapes;
+    }
+    static rectToTriangleHorizontal(triangles, x, y, x2, y2, z) {
+        const bl = { x: x, y: y, z: z };
+        const tl = { x: x, y: y2, z: z };
+        const br = { x: x2, y: y, z: z };
+        const tr = { x: x2, y: y2, z: z };
+        triangles.push({ v1: bl, v2: tl, v3: br });
+        triangles.push({ v1: tr, v2: tl, v3: br });
+    }
+    static rectToTriangleVertical(triangles, x, y, x2, y2, z, z2) {
+        const bl = { x: x, y: y, z: z };
+        const br = { x: x, y: y, z: z2 };
+        const tl = { x: x2, y: y2, z: z };
+        const tr = { x: x2, y: y2, z: z2 };
+        triangles.push({ v1: br, v2: bl, v3: tr });
+        triangles.push({ v1: bl, v2: tl, v3: tr });
+    }
+    static rectToTriangle(triangles, rect) {
+        if (rect.x.z == rect.x2.z) {
+            Triangulation.rectToTriangleHorizontal(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.y2.y, rect.x.z);
+        }
+        else {
+            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.x2.z);
+        }
+    }
+    static getStl(triangles) {
+        let stlString = "solid doom_map\n";
+        for (let triangle of triangles) {
+            const { v1, v2, v3 } = triangle;
+            stlString += `facet normal 0 0 0\n`;
+            stlString += `    outer loop\n`;
+            stlString += `        vertex ${v1.x} ${v1.y} ${v1.z}\n`;
+            stlString += `        vertex ${v2.x} ${v2.y} ${v2.z}\n`;
+            stlString += `        vertex ${v3.x} ${v3.y} ${v3.z}\n`;
+            stlString += `    endloop\n`;
+            stlString += `endfacet\n`;
+        }
+        stlString += "endsolid doom_map\n";
+        return stlString;
+    }
+}
 class mat4 {
     static create() {
         const out = new Float32Array(16);
@@ -2986,6 +3070,7 @@ class WadHeader {
 }
 // https://doomwiki.org/wiki/WAD
 class WadFile {
+    name;
     wadInfo;
     directory;
     maps;
@@ -2998,7 +3083,8 @@ class WadFile {
     reader;
     decodeImagesCache = new Map();
     directoryMap;
-    constructor(file) {
+    constructor(name, file) {
+        this.name = name;
         this.reader = new BinaryFileReader(file);
         this.wadInfo = new WadHeader(this.reader);
         this.reader.seek(this.wadInfo.infotableofs);
@@ -3183,9 +3269,15 @@ class Vertex {
     subtract(other) {
         return new Vertex(this.x - other.x, this.y - other.y);
     }
+    // (1, 0) · ( 0, 1) =  0 -> Perpendicular (meet at 90 degrees)
+    // (1, 0) · ( 1, 0) =  1 -> Identical direction
+    // (1, 0) · (−1, 0) = −1 -> Opposite
     dot(other) {
         return this.x * other.x + this.y * other.y;
     }
+    // (1, 0) × (0,  1) = +1 -> Counterclock wise
+    // (1, 0) × (0, −1) = −1 -> Clockwise
+    // (1, 0) × (2,  0) =  0 -> Collinear (Vectors lie on the same line, same or opposite direction)
     cross(other) {
         return this.x * other.y - this.y * other.x;
     }

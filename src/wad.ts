@@ -153,7 +153,7 @@ class WadFile {
     private readonly decodeImagesCache = new Map<string, DecodedImage>();
     private readonly directoryMap: Map<string, DirectoryEntry>;
 
-    constructor(file: ArrayBuffer) {
+    constructor(public readonly name: string, file: ArrayBuffer) {
         this.reader = new BinaryFileReader(file);
         this.wadInfo = new WadHeader(this.reader);
 
@@ -374,10 +374,16 @@ class Vertex {
         return new Vertex(this.x - other.x, this.y - other.y);
     }
 
+    // (1, 0) · ( 0, 1) =  0 -> Perpendicular (meet at 90 degrees)
+    // (1, 0) · ( 1, 0) =  1 -> Identical direction
+    // (1, 0) · (−1, 0) = −1 -> Opposite
     public dot(other: Vertex): number {
         return this.x * other.x + this.y * other.y;
     }
 
+    // (1, 0) × (0,  1) = +1 -> Counterclock wise
+    // (1, 0) × (0, −1) = −1 -> Clockwise
+    // (1, 0) × (2,  0) =  0 -> Collinear (Vectors lie on the same line, same or opposite direction)
     public cross(other: Vertex): number {
         return this.x * other.y - this.y * other.x;
     }
