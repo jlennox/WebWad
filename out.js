@@ -2744,16 +2744,29 @@ class Triangulation {
         triangles.push({ v1: bl, v2: tl, v3: tr });
     }
     static rectToTriangle(triangles, rect) {
-        if (rect.x.z == rect.x2.z) {
+        if (rect.x.z == rect.y.z) {
             Triangulation.rectToTriangleHorizontal(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.y2.y, rect.x.z);
         }
         else {
-            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.x2.z);
+            Triangulation.rectToTriangleVertical(triangles, rect.x.x, rect.x.y, rect.x2.x, rect.x2.y, rect.x.z, rect.y.z);
         }
     }
-    static getStl(triangles) {
+    static getStl(surfaces) {
         let stlString = "solid doom_map\n";
-        for (let triangle of triangles) {
+        const triangles = [];
+        for (const surface of surfaces) {
+            if (surface.type == SurfaceType.Ceiling)
+                continue;
+            if (surface.type == SurfaceType.Sprite)
+                continue;
+            if (surface.shape === SurfaceShape.Rectangle) {
+                Triangulation.rectToTriangle(triangles, surface);
+            }
+            else {
+                triangles.push(surface);
+            }
+        }
+        for (const triangle of triangles) {
             const { v1, v2, v3 } = triangle;
             stlString += `facet normal 0 0 0\n`;
             stlString += `    outer loop\n`;
